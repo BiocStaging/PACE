@@ -239,9 +239,10 @@ setMethod("paceDecompose", "PACEFit", function(object, spe, ...) {
 #' populating [topDrivers()]. Requires [paceShrink()] and [paceDecompose()] to
 #' have run first.
 #'
-#' The driver scores read the fitted means. A fit saved without its `n x G`
-#' matrices is rebuilt exactly from the fit and `spe`, as in [paceDecompose()],
-#' so pass `spe` for such a fit.
+#' The driver scores read each cell type's mean fitted mean. For a fit saved
+#' without its `n x G` matrices these are rebuilt exactly from the fit and `spe`,
+#' as in [paceDecompose()], a block of cells at a time so the full matrix is
+#' never held; pass `spe` for such a fit.
 #'
 #' @param object A [PACEFit] with shrunken slopes and a decomposition.
 #' @param spe The [SpatialExperiment::SpatialExperiment] that was fitted. Needed
@@ -263,15 +264,15 @@ setMethod("paceDrivers", "PACEFit", function(object, spe = NULL, pairs = NULL, .
   if (!is.null(spe) && !methods::is(spe, "SpatialExperiment"))
     stop("`spe` must be the SpatialExperiment that was fitted; pass pairs by ",
          "name: paceDrivers(fit, spe, pairs = ...).", call. = FALSE)
-  fit_mu <- object@fit
-  if (is.null(fit_mu$mu)) {
-    if (is.null(spe))
-      stop("this fit was saved without its fitted means; pass the ",
-           "SpatialExperiment it was fitted on: paceDrivers(fit, spe).", call. = FALSE)
-    fit_mu$mu <- .pace_mu_parts(object, spe)$mu
-  }
-  args <- list(fit_mu, object@neighbourSlopes,
-               object@varianceDecomposition$blocks, object@cellTypes, pairs = pairs)
+  if (is.null(object@fit$mu) && is.null(spe))
+    stop("this fit was saved without its fitted means; pass the ",
+         "SpatialExperiment it was fitted on: paceDrivers(fit, spe).", call. = FALSE)
+  ## The scores need only each cell type's mean fitted mean, so a stripped fit
+  ## rebuilds those chunk by chunk rather than the whole n x G matrix.
+  mu_means <- .pace_mu_means_by_celltype(object, spe)
+  args <- list(object@fit, object@neighbourSlopes,
+               object@varianceDecomposition$blocks, object@cellTypes,
+               mu_means = mu_means, pairs = pairs)
   ## condition cohorts score the responder interaction; pass the term and 0/1 indicator.
   if (!is.null(object@params$condition_col)) {
     args$resp_term  <- object@params$resp_term

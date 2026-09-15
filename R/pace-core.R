@@ -23,7 +23,9 @@
 ##                             image_col    = "sample")     #   cell type + sample id
 ##   shr <- pace_shrink(res$fit, res$types)
 ##   dec <- pace_decompose(res$fit, res$df, res$Y, res$types, res$X_fixed)
-##   drv <- pace_top_drivers(res$fit, shr, dec, res$types)  # all focal x neighbour pairs
+##   ct <- as.character(res$df$celltype)
+##   mu_means <- rowsum(res$fit$mu, ct) / as.vector(table(ct))   # rows named by cell type
+##   drv <- pace_top_drivers(res$fit, shr, dec, res$types, mu_means)  # all focal x neighbour pairs
 ## Cell types, coordinates and image grouping are READ FROM THE DATA; the method
 ## defaults reproduce the manuscript recipe. (The Bioconductor wrapper paceFit(spe)
 ## reads these from a SpatialExperiment's conventions, collapsing the call to one
@@ -329,24 +331,79 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   if (!is.null(f$mu) && !is.null(f$technical_offset_mat))
     return(list(mu = f$mu, technical_offset_mat = f$technical_offset_mat))
 
-  df <- object@context$df
-  p  <- object@params
-  Y  <- t(as.matrix(SummarizedExperiment::assay(spe, p$assay_name)))
-  Y  <- Y[, object@context$genes, drop = FALSE]
-  if (nrow(Y) != nrow(df))
-    stop("`spe` has ", nrow(Y), " cells but the fit has ", nrow(df),
-         "; pass the same object used for paceModel().", call. = FALSE)
-
-  ## mu_bio = exp(eta + offset), offset = log library size (pace_fit_streaming).
-  eta    <- as.matrix(object@context$X_fixed %*% f$B) +
-            as.matrix(f$re_meta$Z %*% f$U)
-  mu_bio <- pmax(exp(eta + log(df$nCount)), 1e-6)
+  inputs <- .pace_mu_inputs(object, spe)
+  inputs$Y <- as.matrix(inputs$Y)
+  block <- .pace_mu_block(object, seq_len(nrow(inputs$Y)), inputs)
 
   ## contamination = "none" carries no ambient term: mu = mu_bio, no spillover.
+  if (is.null(block$mu_spill))
+    return(list(mu = block$mu_bio,
+                technical_offset_mat = matrix(0, nrow(block$mu_bio), ncol(block$mu_bio),
+                                              dimnames = dimnames(block$mu_bio))))
+
+  list(mu                   = pmax(block$mu_bio + block$mu_spill, 1e-6),
+       technical_offset_mat = log1p(block$mu_spill / block$mu_bio))
+}
+
+## Mean fitted mean of every gene within each cell type (cell types x genes),
+## computed chunk by chunk so the n x G `mu` is never held whole. The driver
+## scores need only these means, and at a million cells each n x G matrix runs
+## to gigabytes. A fit that stores `mu` is averaged directly.
+.pace_mu_means_by_celltype <- function(object, spe = NULL, chunk_size = 10000L) {
+  f <- object@fit
+  types <- object@cellTypes
+
+  ## the cell-type membership pace_top_drivers() uses: the intercept column
+  Z_intercepts <- f$re_meta$Z[, paste0(types, "::(Intercept)"), drop = FALSE]
+  cell_type <- max.col(as.matrix(Z_intercepts != 0), ties.method = "first")
+  cell_type[Matrix::rowSums(Z_intercepts != 0) == 0] <- NA_integer_
+  cell_type <- factor(types[cell_type], levels = types)
+  n_cells <- nrow(Z_intercepts)
+
+  sums <- NULL
+  add_block <- function(mu_block, rows) {
+    typed <- !is.na(cell_type[rows])
+    block_sums <- rowsum(mu_block[typed, , drop = FALSE], cell_type[rows][typed],
+                         reorder = TRUE)
+    full <- matrix(0, length(types), ncol(mu_block),
+                   dimnames = list(types, colnames(mu_block)))
+    full[rownames(block_sums), ] <- block_sums
+    if (is.null(sums)) full else sums + full
+  }
+
+  if (!is.null(f$mu)) {
+    sums <- add_block(as.matrix(f$mu), seq_len(n_cells))
+  } else {
+    if (is.null(spe))
+      stop("this fit was saved without its fitted means; pass the ",
+           "SpatialExperiment it was fitted on.", call. = FALSE)
+    inputs <- .pace_mu_inputs(object, spe)
+    for (start in seq(1L, n_cells, by = chunk_size)) {
+      rows <- start:min(start + chunk_size - 1L, n_cells)
+      block <- .pace_mu_block(object, rows, inputs)
+      mu_block <- if (is.null(block$mu_spill)) block$mu_bio
+                  else pmax(block$mu_bio + block$mu_spill, 1e-6)
+      sums <- add_block(mu_block, rows)
+    }
+  }
+  sums / as.vector(table(cell_type))
+}
+
+## What rebuilding mu needs beyond the fit: the counts (cells x fitted genes,
+## kept sparse if the assay is) and the ambient field, or NULL for a fit
+## without contamination.
+.pace_mu_inputs <- function(object, spe) {
+  f  <- object@fit
+  df <- object@context$df
+  p  <- object@params
+  counts <- SummarizedExperiment::assay(spe, p$assay_name)
+  if (ncol(counts) != nrow(df))
+    stop("`spe` has ", ncol(counts), " cells but the fit has ", nrow(df),
+         "; pass the same object used for paceModel().", call. = FALSE)
+  Y <- Matrix::t(counts[object@context$genes, , drop = FALSE])
+
   if (!identical(p$contamination, "percell_hc") || is.null(f$percell_bleed_rho))
-    return(list(mu = mu_bio,
-                technical_offset_mat = matrix(0, nrow(mu_bio), ncol(mu_bio),
-                                              dimnames = dimnames(mu_bio))))
+    return(list(Y = Y, amb = NULL))
 
   if (is.null(p$edge_correct))
     stop("this fit predates the recording of `edge_correct` and its ambient ",
@@ -357,10 +414,27 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
                             df$celltype, df$imageID, object@cellTypes,
                             h_tech = p$h_tech, edge_correct = p$edge_correct,
                             validate = FALSE, verbose = FALSE)
+  list(Y = Y, amb = amb)
+}
+
+## The two parts of the fitted mean for a block of cells (rows x genes):
+## mu_bio, and mu_spill (NULL without contamination). The one place the
+## rebuild formula lives, shared by the whole-matrix and chunked callers.
+.pace_mu_block <- function(object, rows, inputs) {
+  f  <- object@fit
+  df <- object@context$df
+
+  ## mu_bio = exp(eta + offset), offset = log library size (pace_fit_streaming).
+  eta    <- as.matrix(object@context$X_fixed[rows, , drop = FALSE] %*% f$B) +
+            as.matrix(f$re_meta$Z[rows, , drop = FALSE] %*% f$U)
+  mu_bio <- pmax(exp(eta + log(df$nCount[rows])), 1e-6)
+  if (is.null(inputs$amb))
+    return(list(mu_bio = mu_bio, mu_spill = NULL))
+
   ## Same expressions and floors as the solver's final pass.
-  mu_spill <- pmax(as.matrix(amb$W %*% Y) * f$percell_bleed_rho, 0)
-  list(mu                   = pmax(mu_bio + mu_spill, 1e-6),
-       technical_offset_mat = log1p(mu_spill / mu_bio))
+  ambient  <- as.matrix(inputs$amb$W[rows, , drop = FALSE] %*% inputs$Y)
+  mu_spill <- pmax(ambient * f$percell_bleed_rho[rows], 0)
+  list(mu_bio = mu_bio, mu_spill = mu_spill)
 }
 
 ## ----------------------------------------------------------------------------
@@ -580,7 +654,9 @@ pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL) {
 ##   MCSD = b_shrunk^2 * spec^2 * focal_mean, filtered lfsr < 0.05, ranked desc.
 ## `pairs` is a list of c(focal, neighbour); resp_term = NULL gives term == nb.
 ## ----------------------------------------------------------------------------
-pace_top_drivers <- function(fit, shrunken_long, dec, types, pairs = NULL,
+## `mu_means` is the cell types x genes matrix of mean fitted means
+## (.pace_mu_means_by_celltype()), so the n x G `mu` need not be held.
+pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = NULL,
                              resp_term = NULL, resp_dummy = NULL) {
   ## default: every ordered focal != neighbour pair (a chosen subset is only a
   ## reporting convenience, not part of the method).
@@ -619,7 +695,7 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, pairs = NULL,
     }
     N_t <- as.numeric(Z_re[cells_c, col_N])
     var_N <- stats::var(N_t, na.rm = TRUE)
-    mu_bar_per_gene <- Matrix::colMeans(fit$mu[cells_c, , drop = FALSE])
+    mu_bar_per_gene <- mu_means[fc, ]
     names(alpha_g) <- gene_names_fit
     names(mu_bar_per_gene) <- gene_names_fit
 

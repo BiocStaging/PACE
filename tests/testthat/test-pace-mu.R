@@ -98,3 +98,26 @@ test_that("a stripped fit without spe is refused, not scored empty", {
   # pairs given positionally used to land in `spe`
   expect_error(paceDrivers(fit, list(c("Macrophage", "Tumour"))), "pass pairs by name")
 })
+
+test_that("chunked cell-type means match the means of the whole rebuilt mu", {
+  # paceDrivers() averages mu a block of cells at a time so the n x G matrix is
+  # never held. Block boundaries must not change the answer, including a block
+  # size that does not divide the number of cells.
+  full_mu <- PACE:::.pace_mu_parts(fit, spe)$mu
+  types <- fit@cellTypes
+  intercepts <- fit@fit$re_meta$Z[, paste0(types, "::(Intercept)"), drop = FALSE]
+  reference <- t(vapply(types, function(ct)
+    colMeans(full_mu[intercepts[, paste0(ct, "::(Intercept)")] != 0, , drop = FALSE]),
+    numeric(ncol(full_mu))))
+
+  for (chunk in c(nrow(full_mu), 1000L, 777L)) {
+    means <- PACE:::.pace_mu_means_by_celltype(fit, spe, chunk_size = chunk)
+    expect_identical(dimnames(means), dimnames(reference))
+    expect_equal(means, reference, tolerance = 1e-10)
+  }
+
+  # a fit that stores mu is averaged directly, to the same values
+  stored <- fit
+  stored@fit$mu <- full_mu
+  expect_equal(PACE:::.pace_mu_means_by_celltype(stored), reference, tolerance = 1e-10)
+})
