@@ -131,3 +131,46 @@ test_that("the null correlation falls back to independence when nothing varies",
                  "fewer than two varying conditions")
   expect_null(V)
 })
+
+test_that("every neighbour slice is shrunk over the same genes", {
+  fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
+  # A non-converged SE for one gene in ONE slice (neighbour Tumour) used to
+  # remove that gene from the Tumour slice only, so the slices were calibrated
+  # on different gene sets.
+  fit@fit$se_U["Macrophage::Tumour", "MRC1"] <- 100
+  expect_message(
+    slopes <- PACE:::pace_shrink(fit@fit, fit@cellTypes, data_driven = FALSE),
+    "genes dropped to keep the gene set common across neighbours")
+  genes_by_neighbour <- split(slopes$gene, slopes$neighbour)
+  expect_length(genes_by_neighbour, length(fit@cellTypes))
+  expect_false("MRC1" %in% slopes$gene)
+  first <- sort(unique(genes_by_neighbour[[1]]))
+  for (g in genes_by_neighbour) expect_identical(sort(unique(g)), first)
+})
+
+test_that("expected false sign calls are the sum of lfsr over the calls", {
+  fsr <- PACE:::expected_false_sign(c(0.01, 0.04, 0.2, NA, 0.5), thresh = 0.05)
+  expect_equal(fsr$n_calls, 2L)
+  expect_equal(fsr$expected_false_sign, 0.05)
+  expect_equal(fsr$false_sign_rate, 0.025)
+  none <- PACE:::expected_false_sign(c(0.3, NA))
+  expect_equal(none$n_calls, 0L)
+  expect_equal(none$expected_false_sign, 0)
+  expect_true(is.na(none$false_sign_rate))
+})
+
+test_that("a collapsed neighbour slice is skipped alone, not with every other slice", {
+  fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
+  # Myoepithelial slopes sit at zero with SE at the floor; nudging the SEs just
+  # under it makes every gene in that slice degenerate. Taken into the common
+  # gene set, that slice emptied all eight slices.
+  myo_rows <- grep("::Myoepithelial$", rownames(fit@fit$se_U))
+  fit@fit$U[myo_rows, ]    <- 0
+  fit@fit$se_U[myo_rows, ] <- 9.9e-5
+  expect_message(
+    slopes <- PACE:::pace_shrink(fit@fit, fit@cellTypes, data_driven = FALSE),
+    "Myoepithelial' has <5 well-fit genes")
+  expect_false("Myoepithelial" %in% slopes$neighbour)
+  expect_setequal(unique(slopes$neighbour), setdiff(fit@cellTypes, "Myoepithelial"))
+  expect_length(unique(slopes$gene), ncol(fit@fit$U))
+})

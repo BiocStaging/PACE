@@ -24,6 +24,13 @@ The \code{PACEFit} with the shrunken neighbour slopes added.
 Stabilises the fitted per-(gene, focal, neighbour) proximity slopes with
 multivariate adaptive shrinkage, populating \code{\link[=neighbourSlopes]{neighbourSlopes()}}.
 }
+\details{
+One mash model is fitted per neighbour cell type, and every one of them is
+fitted over the same genes. mash calibrates against the genes it is given,
+so a common gene set keeps the lfsr comparable across neighbours; a gene
+that cannot be used for one neighbour is dropped for all of them, with a
+message.
+}
 \examples{
 fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
 fit <- paceShrink(fit)

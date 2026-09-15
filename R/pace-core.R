@@ -613,7 +613,8 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, pairs = NULL,
     cells_c <- cells_by_ct[[fc]]
     col_N <- paste0(fc, "::", nc)
     if (!col_N %in% colnames(Z_re)) {
-      out[[pk]] <- list(scores = s[0, ], status = "dropped (n_eff)")
+      out[[pk]] <- list(scores = s[0, ], status = "dropped (n_eff)",
+                        expected_false_sign = 0, false_sign_rate = NA_real_)
       next
     }
     N_t <- as.numeric(Z_re[cells_c, col_N])
@@ -672,7 +673,11 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, pairs = NULL,
                       lfsr, sd_shrunk)
     }
     status <- if (nrow(res) >= 3) "significant" else "honestly null"
-    out[[pk]] <- list(scores = res, status = status)
+    ## how many of this pair's calls are expected to have the wrong sign
+    fsr <- expected_false_sign(res$lfsr)
+    out[[pk]] <- list(scores = res, status = status,
+                      expected_false_sign = fsr$expected_false_sign,
+                      false_sign_rate = fsr$false_sign_rate)
   }
   out
 }

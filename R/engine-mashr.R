@@ -89,8 +89,11 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
   build_term <- function(nb) {
     if (is.null(resp_term)) nb else paste0(resp_term, ":", nb)
   }
+  se_cap <- 50  # any SE above this is a non-converged BLUP, drop
+  se_floor <- 1e-4  # below this both Bhat and Shat are effectively zero
 
-  out <- list()
+  ## Pass 1: build every neighbour slice and find the genes each one can use.
+  slices <- list()
   for (nb in neighbours) {
     target_term <- build_term(nb)
     sub <- rv_all |>
@@ -121,8 +124,6 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
     ## Strict filter: require finite Bhat / Shat, positive Shat, and Shat
     ## not pathologically large (boundary-singular fits sometimes return
     ## absurd SEs that destabilise mash's likelihood matrix).
-    se_cap <- 50  # any SE above this is a non-converged BLUP, drop
-    se_floor <- 1e-4  # below this both Bhat and Shat are effectively zero
     keep <- rowSums(!is.finite(Bhat)) == 0 &
             rowSums(!is.finite(Shat)) == 0 &
             rowSums(Shat <= 0)        == 0 &
@@ -131,14 +132,42 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
             ## ~zero SE — these are degenerate boundary fits that crash
             ## mashr's likelihood-matrix check
             !(rowSums(abs(Bhat) < se_floor & Shat < se_floor) == ncol(Bhat))
-    Bhat <- Bhat[keep, , drop = FALSE]
-    Shat <- Shat[keep, , drop = FALSE]
+    ## A slice with too few usable genes is skipped on its own; letting it into
+    ## the common gene set below would empty every other slice too.
+    if (sum(keep) < 5) {
+      message("  [mashr] term '", target_term,
+              "' has <5 well-fit genes after filter, skipping")
+      next
+    }
+    slices[[nb]] <- list(target_term = target_term, Bhat = Bhat, Shat = Shat,
+                         usable_genes = genes[keep])
+  }
+  if (length(slices) == 0) return(.empty_shrunken_long())
+
+  ## Every slice is shrunk over the SAME genes. mash calibrates its null
+  ## against the genes it is given, so slices filtered separately would carry
+  ## lfsr on different bases, and one global lfsr cut across them would not be
+  ## comparable. A gene unusable in any slice is dropped from all of them.
+  common_genes <- Reduce(intersect, lapply(slices, `[[`, "usable_genes"))
+  for (nb in names(slices)) {
+    n_dropped <- length(setdiff(slices[[nb]]$usable_genes, common_genes))
+    if (n_dropped > 0)
+      message("  [mashr] term '", slices[[nb]]$target_term, "': ", n_dropped,
+              " genes dropped to keep the gene set common across neighbours")
+  }
+
+  ## Pass 2: shrink each slice over the common genes.
+  out <- list()
+  for (nb in names(slices)) {
+    target_term <- slices[[nb]]$target_term
+    Bhat <- slices[[nb]]$Bhat[common_genes, , drop = FALSE]
+    Shat <- slices[[nb]]$Shat[common_genes, , drop = FALSE]
     ## Floor any remaining tiny SEs to a small positive number to keep
     ## mashr's likelihood matrix well-conditioned.
     Shat <- pmax(Shat, se_floor)
     if (nrow(Bhat) < 5) {
       message("  [mashr] term '", target_term,
-              "' has <5 well-fit genes after filter, skipping")
+              "' has <5 genes common to every neighbour, skipping")
       next
     }
 
@@ -194,19 +223,40 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
       sd_shrunk       = as.numeric(psd),
       lfsr            = as.numeric(lfsr)
     )
-    message(sprintf("  [mashr] %s: %d genes shrunk; sig (lfsr<0.05) = %d",
-                    target_term, nrow(Bhat),
-                    length(get_significant_results(m, thresh = 0.05))))
+    fsr <- expected_false_sign(as.numeric(lfsr))
+    message(sprintf("  [mashr] %s: %d genes shrunk; gene-focal calls (lfsr<0.05) = %d, expected false sign = %.1f",
+                    target_term, nrow(Bhat), fsr$n_calls, fsr$expected_false_sign))
   }
 
-  if (length(out) == 0) {
-    return(tibble::tibble(gene = character(), focal = character(),
-                          neighbour = character(), term = character(),
-                          estimate = numeric(), std.error = numeric(),
-                          estimate_shrunk = numeric(), sd_shrunk = numeric(),
-                          lfsr = numeric()))
-  }
+  if (length(out) == 0) return(.empty_shrunken_long())
   dplyr::bind_rows(out)
+}
+
+.empty_shrunken_long <- function() {
+  tibble::tibble(gene = character(), focal = character(),
+                 neighbour = character(), term = character(),
+                 estimate = numeric(), std.error = numeric(),
+                 estimate_shrunk = numeric(), sd_shrunk = numeric(),
+                 lfsr = numeric())
+}
+
+# Expected number of false sign calls among the effects called at lfsr < thresh
+#
+# lfsr is the posterior probability that a called effect has the wrong sign, so
+# its sum over the calls is the posterior expected number of sign errors among
+# them (Stephens 2017, Biostatistics 18:275), and its mean is the estimated
+# false sign rate. Both are only as calibrated as the lfsr they are built from.
+#
+# @param lfsr Numeric vector of lfsr values (NA ignored).
+# @param thresh The calling threshold.
+# @return A list: `n_calls`, `expected_false_sign`, `false_sign_rate`.
+expected_false_sign <- function(lfsr, thresh = 0.05) {
+  called <- lfsr[!is.na(lfsr) & lfsr < thresh]
+  n_calls <- length(called)
+  expected <- sum(called)
+  list(n_calls = n_calls,
+       expected_false_sign = expected,
+       false_sign_rate = if (n_calls > 0) expected / n_calls else NA_real_)
 }
 
 # Left-join shrunken values into ran_vals

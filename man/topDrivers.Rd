@@ -15,11 +15,22 @@ topDrivers(object, ...)
 \item{...}{Unused.}
 }
 \value{
-A list of per-pair driver tables.
+A named list with one entry per focal-neighbour pair, each a list
+with \code{scores} (the driver table), \code{status}, \code{expected_false_sign} and
+\code{false_sign_rate}.
 }
 \description{
 Returns the driver-score tables ranking the genes that mediate each
 focal-neighbour spatial relationship.
+}
+\details{
+Each pair's genes are called at lfsr < 0.05. The lfsr is the posterior
+probability that a call has the wrong sign, so its sum over a pair's calls,
+\code{expected_false_sign}, is the expected number of those calls with the wrong
+sign, and \code{false_sign_rate} is that count as a fraction of the calls
+(Stephens 2017). Read a pair's call count against it: many ordered pairs are
+tested, and a pair with three calls and an expected 1.5 wrong is weak
+evidence. Both are only as well calibrated as the lfsr itself.
 }
 \examples{
 fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
