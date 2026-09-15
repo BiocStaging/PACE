@@ -44,15 +44,23 @@
   threads
 }
 
-## Coordinates as an n x 2 double matrix without missing values.
+## A radius or bandwidth: one finite number greater than 0.
+.pace_check_positive <- function(value, name) {
+  if (!is.numeric(value) || length(value) != 1L || !is.finite(value) || value <= 0)
+    stop("`", name, "` must be a single finite number greater than 0.", call. = FALSE)
+  invisible(value)
+}
+
+## Coordinates as an n x 2 double matrix of finite values. PACE neighbourhoods
+## are two-dimensional, so a third coordinate column is refused, not dropped.
 .pace_coordinate_matrix <- function(coords) {
   coords <- as.matrix(coords)
-  if (ncol(coords) < 2L)
-    stop("coordinates must have two columns.", call. = FALSE)
-  coords <- coords[, 1:2, drop = FALSE]
+  if (ncol(coords) != 2L)
+    stop("coordinates must have exactly two columns (x, y); got ", ncol(coords), ".",
+         call. = FALSE)
   storage.mode(coords) <- "double"
-  if (anyNA(coords))
-    stop("coordinates must not contain missing values.", call. = FALSE)
+  if (!all(is.finite(coords)))
+    stop("coordinates must be finite (no NA, NaN or Inf).", call. = FALSE)
   coords
 }
 
@@ -71,10 +79,20 @@
   list(code = .pace_codes(image, image_levels), n_images = length(image_levels))
 }
 
-## Counts as a double dgCMatrix, cells x genes (no copy when already one).
+## Counts as a double dgCMatrix, cells x genes (no copy when already one), with
+## every stored value finite. Matrix and base matrices are converted directly;
+## other matrix-like assays (DelayedArray, HDF5-backed) are realised through
+## their own sparse coercion when they have one, and through as.matrix() otherwise.
 .pace_as_dgc <- function(Y) {
-  if (methods::is(Y, "dgCMatrix")) return(Y)
-  methods::as(methods::as(methods::as(Y, "dMatrix"), "generalMatrix"), "CsparseMatrix")
+  if (!methods::is(Y, "dgCMatrix")) {
+    if (!methods::is(Y, "Matrix") && !is.matrix(Y))
+      Y <- tryCatch(methods::as(Y, "dgCMatrix"), error = function(e) as.matrix(Y))
+    if (!methods::is(Y, "dgCMatrix"))
+      Y <- methods::as(methods::as(methods::as(Y, "dMatrix"), "generalMatrix"), "CsparseMatrix")
+  }
+  if (!all(is.finite(Y@x)))
+    stop("counts must be finite (no NA, NaN or Inf).", call. = FALSE)
+  Y
 }
 
 ## The quadrature angles of the edge correction, theta_k = 2 pi k / n_angles.
@@ -96,6 +114,7 @@ pace_area_fraction <- function(coords, r,
                                xmin = NULL, xmax = NULL,
                                ymin = NULL, ymax = NULL,
                                n_angles = 1000L, threads = 1L) {
+  .pace_check_positive(r, "r")
   coords <- .pace_coordinate_matrix(coords)
   if (!nrow(coords)) return(numeric(0))
   if (is.null(xmin)) xmin <- min(coords[, 1])
@@ -105,6 +124,29 @@ pace_area_fraction <- function(coords, r,
   angles <- .pace_edge_angles(n_angles)
   pace_area_fraction_cpp(coords, r, xmin, xmax, ymin, ymax, angles$cos, angles$sin,
                          .pace_thread_count(threads))
+}
+
+## The original R edge-correction quadrature, vectorised over cells: used only to
+## validate the compiled edge correction inside pace_ambient_field(). Same
+## arithmetic as the R loop it replaced (rowSums() accumulates like sum()).
+.pace_edge_fraction_reference <- function(cells, r, xmin, xmax, ymin, ymax, n_angles = 1000L) {
+  theta <- seq(0, 2 * pi, length.out = n_angles + 1L)[-1L]
+  cos_t <- cos(theta)
+  sin_t <- sin(theta)
+  x0 <- cells[, 1]
+  y0 <- cells[, 2]
+  ones <- rep(1, length(x0))
+  d_right  <- outer(xmax - x0, ifelse(cos_t > 0, cos_t, NA), "/")
+  d_left   <- outer(xmin - x0, ifelse(cos_t < 0, cos_t, NA), "/")
+  d_top    <- outer(ymax - y0, ifelse(sin_t > 0, sin_t, NA), "/")
+  d_bottom <- outer(ymin - y0, ifelse(sin_t < 0, sin_t, NA), "/")
+  d_right[is.na(d_right)] <- Inf
+  d_left[is.na(d_left)] <- Inf
+  d_top[is.na(d_top)] <- Inf
+  d_bottom[is.na(d_bottom)] <- Inf
+  d_max <- pmin(d_right, d_left, d_top, d_bottom)
+  r_eff <- pmin(r * outer(ones, rep(1, n_angles)), d_max)
+  (pi * rowSums(r_eff^2) / n_angles) / (pi * r^2)
 }
 
 ## ----------------------------------------------------------------------------
@@ -119,6 +161,9 @@ pace_area_fraction <- function(coords, r,
 ## ----------------------------------------------------------------------------
 pace_neighbour_kernel <- function(coords, celltype, types, h_bio, h_tech, eps,
                                   image = NULL, per_image = FALSE, threads = 1L) {
+  .pace_check_positive(h_bio, "h_bio")
+  .pace_check_positive(h_tech, "h_tech")
+  .pace_check_positive(eps, "eps")
   coords <- .pace_coordinate_matrix(coords)
   n <- nrow(coords)
   neighbour_type <- .pace_codes(as.character(celltype), types)
@@ -206,7 +251,7 @@ pace_anchors <- function(coords, Y, celltype, image, types,
   images <- .pace_image_codes(image)
   same_frac <- pace_same_type_fraction_cpp(.pace_coordinate_matrix(coords),
                                            .pace_codes(labels, unique(labels)),
-                                           images$code, images$n_images,
+                                           images$code,
                                            radius = 30, min_image_cells = 50L,
                                            n_threads = threads)
   core <- which(same_frac >= homo_frac)
@@ -247,12 +292,15 @@ pace_anchors <- function(coords, Y, celltype, image, types,
 ##             neighbours j within rad = 3 * h_tech of i (self excluded).
 ## Streaming identity: W %*% Y[, g] == dense E_tech[, g]. Validated on a few
 ## evenly spaced genes before the fit when `validate = TRUE`.
-## W and the edge fractions are built in C++ without storing neighbour pairs; the
-## validation recomputes E_tech independently from dbscan::frNN pairs.
+## W and the edge fractions are built in C++ without storing neighbour pairs. The
+## validation is independent of that code: neighbour pairs come from
+## dbscan::frNN, and the edge fractions of up to 1000 checked cells are recomputed
+## with the original R quadrature (.pace_edge_fraction_reference()).
 ## ----------------------------------------------------------------------------
 pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
                                edge_correct = TRUE, validate = TRUE, verbose = TRUE,
                                threads = 1L) {
+  .pace_check_positive(h_tech, "h_tech")
   n <- nrow(Y)
   rad <- 3 * h_tech
   coords <- .pace_coordinate_matrix(coords)
@@ -277,8 +325,11 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   if (validate) {
     spot_g <- unique(round(seq(1, ncol(Y), length.out = min(5L, ncol(Y)))))
     Y_spot <- as.matrix(Y[, spot_g, drop = FALSE])
-    E_spot <- matrix(0, n, length(spot_g))
+    a_spot <- as.matrix(W %*% Y_spot)
     by_image <- split(seq_len(n), image)
+    ## unnormalised E_tech sums from frNN pairs, per cell with a heterotypic neighbour
+    raw_rows <- list()
+    raw_sums <- list()
     for (si in seq_along(by_image)) {
       rows <- by_image[[si]]
       if (length(rows) < 2) next
@@ -291,11 +342,32 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
       if (!any(keep)) next
       weighted <- exp(-d_loc[keep] / h_tech) * Y_spot[rows[j_loc[keep]], , drop = FALSE]
       sums <- rowsum(weighted, rows[i_loc[keep]])
-      target <- as.integer(rownames(sums))
-      E_spot[target, ] <- sums / af[target]
+      raw_rows[[length(raw_rows) + 1L]] <- as.integer(rownames(sums))
+      raw_sums[[length(raw_sums) + 1L]] <- sums
     }
-    a_spot <- as.matrix(W %*% Y_spot)
-    max_id <- max(abs(a_spot - E_spot))
+    target <- unlist(raw_rows, use.names = FALSE)
+    E_raw <- do.call(rbind, raw_sums)
+    ## cells without heterotypic neighbours must have empty W rows
+    max_id <- if (length(target) < n) max(abs(a_spot[-target, , drop = FALSE])) else 0
+    if (length(target)) {
+      ## up to 1000 evenly spaced cells, edge fractions recomputed independently
+      pick <- unique(round(seq(1, length(target), length.out = min(1000L, length(target)))))
+      checked <- target[pick]
+      af_reference <- rep(1, length(checked))
+      if (edge_correct) {
+        checked_image <- as.character(image)[checked]
+        for (im in unique(checked_image)) {
+          in_image <- which(checked_image == im)
+          rows <- by_image[[im]]
+          af_reference[in_image] <- .pace_edge_fraction_reference(
+            coords[checked[in_image], , drop = FALSE], rad,
+            min(coords[rows, 1]), max(coords[rows, 1]),
+            min(coords[rows, 2]), max(coords[rows, 2]))
+        }
+      }
+      E_checked <- E_raw[pick, , drop = FALSE] / af_reference
+      max_id <- max(max_id, abs(a_spot[checked, , drop = FALSE] - E_checked))
+    }
     if (verbose)
       message(sprintf("    [W identity check] max|W%%*%%Y - dense E_tech| over %d genes = %.3e",
                       length(spot_g), max_id))
@@ -469,6 +541,9 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   dispersion    <- match.arg(dispersion)
   image_re      <- match.arg(image_re)
   if (is.null(eps)) eps <- 3 * h_bio
+  .pace_check_positive(h_bio, "h_bio")
+  .pace_check_positive(h_tech, "h_tech")
+  .pace_check_positive(eps, "eps")
   use_etech <- contamination == "percell_hc"   ## E^tech ambient drives spillover
   has_cond  <- !is.null(condition_col)
   if (image_re == "condition_slopes" && !has_cond)
