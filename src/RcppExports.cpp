@@ -129,6 +129,35 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_group_covariances_cpp
+Rcpp::NumericVector pace_group_covariances_cpp(const Rcpp::NumericMatrix& values, const Rcpp::IntegerVector& group, int n_groups, int n_threads);
+RcppExport SEXP _PACE_pace_group_covariances_cpp(SEXP valuesSEXP, SEXP groupSEXP, SEXP n_groupsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type values(valuesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
+    Rcpp::traits::input_parameter< int >::type n_groups(n_groupsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_group_covariances_cpp(values, group, n_groups, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_single_frame_statistics_cpp
+Rcpp::List pace_single_frame_statistics_cpp(const Rcpp::S4& counts, const Rcpp::NumericVector& n_count, const Rcpp::IntegerVector& group, int n_groups, int n_threads);
+RcppExport SEXP _PACE_pace_single_frame_statistics_cpp(SEXP countsSEXP, SEXP n_countSEXP, SEXP groupSEXP, SEXP n_groupsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type n_count(n_countSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
+    Rcpp::traits::input_parameter< int >::type n_groups(n_groupsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_single_frame_statistics_cpp(counts, n_count, group, n_groups, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // solve_chunk_full_cpp
 List solve_chunk_full_cpp(const Eigen::Map<Eigen::MatrixXd>& X_fixed, const Eigen::Map<Eigen::MatrixXd>& w_chunk, const Eigen::Map<Eigen::MatrixXd>& z_chunk, const Eigen::Map<Eigen::MatrixXd>& lam_diag_chunk, int q_total, const List& blocks, const List& X_terms_list, const List& cells_by_grp_list, const List& cell_grp_list, int n_threads, int stage3_mode, int interior_precision);
 RcppExport SEXP _PACE_solve_chunk_full_cpp(SEXP X_fixedSEXP, SEXP w_chunkSEXP, SEXP z_chunkSEXP, SEXP lam_diag_chunkSEXP, SEXP q_totalSEXP, SEXP blocksSEXP, SEXP X_terms_listSEXP, SEXP cells_by_grp_listSEXP, SEXP cell_grp_listSEXP, SEXP n_threadsSEXP, SEXP stage3_modeSEXP, SEXP interior_precisionSEXP) {
@@ -181,6 +210,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_ambient_field_cpp", (DL_FUNC) &_PACE_pace_ambient_field_cpp, 9},
     {"_PACE_pace_same_type_fraction_cpp", (DL_FUNC) &_PACE_pace_same_type_fraction_cpp, 6},
     {"_PACE_pace_group_column_means_cpp", (DL_FUNC) &_PACE_pace_group_column_means_cpp, 5},
+    {"_PACE_pace_group_covariances_cpp", (DL_FUNC) &_PACE_pace_group_covariances_cpp, 4},
+    {"_PACE_pace_single_frame_statistics_cpp", (DL_FUNC) &_PACE_pace_single_frame_statistics_cpp, 5},
     {"_PACE_solve_chunk_full_cpp", (DL_FUNC) &_PACE_solve_chunk_full_cpp, 12},
     {"_PACE_solve_chunk_mb_cpp", (DL_FUNC) &_PACE_solve_chunk_mb_cpp, 11},
     {NULL, NULL, 0}

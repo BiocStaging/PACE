@@ -197,3 +197,52 @@ Rcpp::NumericMatrix pace_group_column_means_cpp(const Rcpp::S4& counts, const Rc
   raise_if_failed(status, "group column means");
   return means;
 }
+
+// Per-group covariance of the columns of a dense n x p matrix (see
+// pace::group_covariances). Returns a p x p x n_groups array (slice [, , g] is
+// group g's covariance matrix), matching the core's contiguous per-group layout.
+// [[Rcpp::export]]
+Rcpp::NumericVector pace_group_covariances_cpp(const Rcpp::NumericMatrix& values,
+                                               const Rcpp::IntegerVector& group, int n_groups,
+                                               int n_threads) {
+  const std::int64_t n = values.nrow();
+  const std::int64_t p = values.ncol();
+  Rcpp::NumericVector covariance(static_cast<R_xlen_t>(n_groups) * p * p);
+  const pace::Status status = pace::group_covariances(
+      pace::Span<const double>(REAL(values), n * p), n, p, int_span(group), n_groups,
+      pace::Span<double>(REAL(covariance), Rf_xlength(covariance)), n_threads, user_interrupted);
+  raise_if_failed(status, "group covariances");
+  covariance.attr("dim") = Rcpp::IntegerVector::create(static_cast<int>(p), static_cast<int>(p), n_groups);
+  return covariance;
+}
+
+// Single-frame statistics of a cells x genes dgCMatrix (see
+// pace::single_frame_statistics). Returns focal_mean and within_ss
+// (n_groups x n_genes) and global_mean (n_genes).
+// [[Rcpp::export]]
+Rcpp::List pace_single_frame_statistics_cpp(const Rcpp::S4& counts, const Rcpp::NumericVector& n_count,
+                                            const Rcpp::IntegerVector& group, int n_groups,
+                                            int n_threads) {
+  const Rcpp::IntegerVector dims = counts.slot("Dim");
+  const Rcpp::IntegerVector column_pointer = counts.slot("p");
+  const Rcpp::IntegerVector row_index = counts.slot("i");
+  const Rcpp::NumericVector values = counts.slot("x");
+  pace::CscView view;
+  view.column_pointer = int_span(column_pointer);
+  view.row_index = int_span(row_index);
+  view.values = double_span(values);
+  view.n_rows = dims[0];
+  view.n_cols = dims[1];
+  Rcpp::NumericMatrix focal_mean(n_groups, dims[1]);
+  Rcpp::NumericMatrix within_ss(n_groups, dims[1]);
+  Rcpp::NumericVector global_mean(dims[1]);
+  const std::int64_t n_slots = static_cast<std::int64_t>(n_groups) * dims[1];
+  const pace::Status status = pace::single_frame_statistics(
+      view, double_span(n_count), int_span(group), n_groups,
+      pace::Span<double>(REAL(focal_mean), n_slots), pace::Span<double>(REAL(within_ss), n_slots),
+      pace::Span<double>(REAL(global_mean), dims[1]), n_threads, user_interrupted);
+  raise_if_failed(status, "single-frame statistics");
+  return Rcpp::List::create(Rcpp::Named("focal_mean") = focal_mean,
+                            Rcpp::Named("within_ss") = within_ss,
+                            Rcpp::Named("global_mean") = global_mean);
+}

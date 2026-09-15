@@ -29,6 +29,14 @@ pace_group_column_means_cpp <- function(counts, group, n_groups, detection, n_th
     .Call(`_PACE_pace_group_column_means_cpp`, counts, group, n_groups, detection, n_threads)
 }
 
+pace_group_covariances_cpp <- function(values, group, n_groups, n_threads) {
+    .Call(`_PACE_pace_group_covariances_cpp`, values, group, n_groups, n_threads)
+}
+
+pace_single_frame_statistics_cpp <- function(counts, n_count, group, n_groups, n_threads) {
+    .Call(`_PACE_pace_single_frame_statistics_cpp`, counts, n_count, group, n_groups, n_threads)
+}
+
 solve_chunk_full_cpp <- function(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode = 0L, interior_precision = 0L) {
     .Call(`_PACE_solve_chunk_full_cpp`, X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode, interior_precision)
 }
