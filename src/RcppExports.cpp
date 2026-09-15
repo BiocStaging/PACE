@@ -11,6 +11,110 @@ Rcpp::Rostream<true>&  Rcpp::Rcout = Rcpp::Rcpp_cout_get();
 Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
+// pace_neighbour_kernels_cpp
+Rcpp::List pace_neighbour_kernels_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& neighbour_type, int n_types, const Rcpp::IntegerVector& group, bool per_group, double h_bio, double h_tech, double eps, int n_threads);
+RcppExport SEXP _PACE_pace_neighbour_kernels_cpp(SEXP coordsSEXP, SEXP neighbour_typeSEXP, SEXP n_typesSEXP, SEXP groupSEXP, SEXP per_groupSEXP, SEXP h_bioSEXP, SEXP h_techSEXP, SEXP epsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type neighbour_type(neighbour_typeSEXP);
+    Rcpp::traits::input_parameter< int >::type n_types(n_typesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
+    Rcpp::traits::input_parameter< bool >::type per_group(per_groupSEXP);
+    Rcpp::traits::input_parameter< double >::type h_bio(h_bioSEXP);
+    Rcpp::traits::input_parameter< double >::type h_tech(h_techSEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_neighbour_kernels_cpp(coords, neighbour_type, n_types, group, per_group, h_bio, h_tech, eps, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_neighbour_counts_cpp
+Rcpp::IntegerVector pace_neighbour_counts_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& group, bool per_group, double eps, int n_threads);
+RcppExport SEXP _PACE_pace_neighbour_counts_cpp(SEXP coordsSEXP, SEXP groupSEXP, SEXP per_groupSEXP, SEXP epsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
+    Rcpp::traits::input_parameter< bool >::type per_group(per_groupSEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_neighbour_counts_cpp(coords, group, per_group, eps, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_area_fraction_cpp
+Rcpp::NumericVector pace_area_fraction_cpp(const Rcpp::NumericMatrix& coords, double r, double x_min, double x_max, double y_min, double y_max, const Rcpp::NumericVector& cos_theta, const Rcpp::NumericVector& sin_theta, int n_threads);
+RcppExport SEXP _PACE_pace_area_fraction_cpp(SEXP coordsSEXP, SEXP rSEXP, SEXP x_minSEXP, SEXP x_maxSEXP, SEXP y_minSEXP, SEXP y_maxSEXP, SEXP cos_thetaSEXP, SEXP sin_thetaSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
+    Rcpp::traits::input_parameter< double >::type r(rSEXP);
+    Rcpp::traits::input_parameter< double >::type x_min(x_minSEXP);
+    Rcpp::traits::input_parameter< double >::type x_max(x_maxSEXP);
+    Rcpp::traits::input_parameter< double >::type y_min(y_minSEXP);
+    Rcpp::traits::input_parameter< double >::type y_max(y_maxSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type cos_theta(cos_thetaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type sin_theta(sin_thetaSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_area_fraction_cpp(coords, r, x_min, x_max, y_min, y_max, cos_theta, sin_theta, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_ambient_field_cpp
+Rcpp::List pace_ambient_field_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& type_code, const Rcpp::IntegerVector& image, int n_images, double h_tech, bool edge_correct, const Rcpp::NumericVector& cos_theta, const Rcpp::NumericVector& sin_theta, int n_threads);
+RcppExport SEXP _PACE_pace_ambient_field_cpp(SEXP coordsSEXP, SEXP type_codeSEXP, SEXP imageSEXP, SEXP n_imagesSEXP, SEXP h_techSEXP, SEXP edge_correctSEXP, SEXP cos_thetaSEXP, SEXP sin_thetaSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type type_code(type_codeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type image(imageSEXP);
+    Rcpp::traits::input_parameter< int >::type n_images(n_imagesSEXP);
+    Rcpp::traits::input_parameter< double >::type h_tech(h_techSEXP);
+    Rcpp::traits::input_parameter< bool >::type edge_correct(edge_correctSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type cos_theta(cos_thetaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type sin_theta(sin_thetaSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_ambient_field_cpp(coords, type_code, image, n_images, h_tech, edge_correct, cos_theta, sin_theta, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_same_type_fraction_cpp
+Rcpp::NumericVector pace_same_type_fraction_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& type_code, const Rcpp::IntegerVector& image, int n_images, double radius, int min_image_cells, int n_threads);
+RcppExport SEXP _PACE_pace_same_type_fraction_cpp(SEXP coordsSEXP, SEXP type_codeSEXP, SEXP imageSEXP, SEXP n_imagesSEXP, SEXP radiusSEXP, SEXP min_image_cellsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type type_code(type_codeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type image(imageSEXP);
+    Rcpp::traits::input_parameter< int >::type n_images(n_imagesSEXP);
+    Rcpp::traits::input_parameter< double >::type radius(radiusSEXP);
+    Rcpp::traits::input_parameter< int >::type min_image_cells(min_image_cellsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_same_type_fraction_cpp(coords, type_code, image, n_images, radius, min_image_cells, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_group_column_means_cpp
+Rcpp::NumericMatrix pace_group_column_means_cpp(const Rcpp::S4& counts, const Rcpp::IntegerVector& group, int n_groups, bool detection, int n_threads);
+RcppExport SEXP _PACE_pace_group_column_means_cpp(SEXP countsSEXP, SEXP groupSEXP, SEXP n_groupsSEXP, SEXP detectionSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
+    Rcpp::traits::input_parameter< int >::type n_groups(n_groupsSEXP);
+    Rcpp::traits::input_parameter< bool >::type detection(detectionSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_group_column_means_cpp(counts, group, n_groups, detection, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // solve_chunk_full_cpp
 List solve_chunk_full_cpp(const Eigen::Map<Eigen::MatrixXd>& X_fixed, const Eigen::Map<Eigen::MatrixXd>& w_chunk, const Eigen::Map<Eigen::MatrixXd>& z_chunk, const Eigen::Map<Eigen::MatrixXd>& lam_diag_chunk, int q_total, const List& blocks, const List& X_terms_list, const List& cells_by_grp_list, const List& cell_grp_list, int n_threads, int stage3_mode, int interior_precision);
 RcppExport SEXP _PACE_solve_chunk_full_cpp(SEXP X_fixedSEXP, SEXP w_chunkSEXP, SEXP z_chunkSEXP, SEXP lam_diag_chunkSEXP, SEXP q_totalSEXP, SEXP blocksSEXP, SEXP X_terms_listSEXP, SEXP cells_by_grp_listSEXP, SEXP cell_grp_listSEXP, SEXP n_threadsSEXP, SEXP stage3_modeSEXP, SEXP interior_precisionSEXP) {
@@ -56,6 +160,12 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
+    {"_PACE_pace_neighbour_kernels_cpp", (DL_FUNC) &_PACE_pace_neighbour_kernels_cpp, 9},
+    {"_PACE_pace_neighbour_counts_cpp", (DL_FUNC) &_PACE_pace_neighbour_counts_cpp, 5},
+    {"_PACE_pace_area_fraction_cpp", (DL_FUNC) &_PACE_pace_area_fraction_cpp, 9},
+    {"_PACE_pace_ambient_field_cpp", (DL_FUNC) &_PACE_pace_ambient_field_cpp, 9},
+    {"_PACE_pace_same_type_fraction_cpp", (DL_FUNC) &_PACE_pace_same_type_fraction_cpp, 7},
+    {"_PACE_pace_group_column_means_cpp", (DL_FUNC) &_PACE_pace_group_column_means_cpp, 5},
     {"_PACE_solve_chunk_full_cpp", (DL_FUNC) &_PACE_solve_chunk_full_cpp, 12},
     {"_PACE_solve_chunk_mb_cpp", (DL_FUNC) &_PACE_solve_chunk_mb_cpp, 11},
     {NULL, NULL, 0}

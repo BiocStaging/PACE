@@ -26,5 +26,6 @@ data-raw/*.rds
 
 # compiled objects
 src/*.o
+src/core/*.o
 src/*.so
 src/*.dll

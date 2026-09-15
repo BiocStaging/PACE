@@ -1,2 +1,7 @@
+# The OpenMP flags are empty on stock CRAN macOS R; the solve_chunk_*.cpp kernels
+# then build serially. The src/core/ code uses std::thread and needs no OpenMP.
 PKG_CXXFLAGS = $(SHLIB_OPENMP_CXXFLAGS)
-PKG_LIBS = $(SHLIB_OPENMP_CXXFLAGS)
+PKG_LIBS = $(SHLIB_OPENMP_CXXFLAGS) -pthread
+
+OBJECTS = RcppExports.o bindings.o solve_chunk_full.o solve_chunk_mb.o \
+          core/thread_pool.o core/neighbourhood.o core/count_stats.o
