@@ -24,7 +24,7 @@ anchorGenes <- function(object, spe, top_n = 10L, assay_name = "counts") {
   ct     <- as.character(SummarizedExperiment::colData(spe)[[object@params$celltype_col]])
   types  <- sort(unique(ct))
   coords <- as.matrix(SpatialExperiment::spatialCoords(spe))
-  Y      <- t(as.matrix(SummarizedExperiment::assay(spe, assay_name)))   # cells x genes
+  Y      <- .pace_as_dgc(Matrix::t(SummarizedExperiment::assay(spe, assay_name)))   # cells x genes, sparse
   genes  <- colnames(Y)
 
   ## image grouping: within-image homotypic cores (constant for a single section)
@@ -37,8 +37,10 @@ anchorGenes <- function(object, spe, top_n = 10L, assay_name = "counts") {
   mask    <- anchors$mask                                    # types x genes (0/1)
 
   ## owner mean = max mean expression of each gene across cell types
-  type_means <- vapply(types, function(tt) colMeans(Y[ct == tt, , drop = FALSE]),
-                       numeric(ncol(Y)))                      # genes x types
+  ## (per-type colMeans computed in C++ from the sparse counts)
+  type_means <- t(pace_group_column_means_cpp(Y, .pace_codes(ct, types), length(types),
+                                              detection = FALSE, n_threads = 1L))  # genes x types
+  dimnames(type_means) <- list(genes, types)
   owner_mean <- apply(type_means, 1, max)
   names(owner_mean) <- genes
 

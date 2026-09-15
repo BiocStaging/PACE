@@ -33,36 +33,78 @@
 ## only ever needed to reproduce a *locked* fit -- see the reproduction test.
 
 ## ----------------------------------------------------------------------------
+## Input helpers for the compiled neighbourhood code (src/core/).
+## ----------------------------------------------------------------------------
+
+## A single positive thread count.
+.pace_thread_count <- function(threads) {
+  threads <- as.integer(threads)
+  if (length(threads) != 1L || is.na(threads) || threads < 1L)
+    stop("`threads` must be a single positive integer.", call. = FALSE)
+  threads
+}
+
+## Coordinates as an n x 2 double matrix without missing values.
+.pace_coordinate_matrix <- function(coords) {
+  coords <- as.matrix(coords)
+  if (ncol(coords) < 2L)
+    stop("coordinates must have two columns.", call. = FALSE)
+  coords <- coords[, 1:2, drop = FALSE]
+  storage.mode(coords) <- "double"
+  if (anyNA(coords))
+    stop("coordinates must not contain missing values.", call. = FALSE)
+  coords
+}
+
+## 0-based codes of `values` in `levels`; values not in `levels` get -1.
+.pace_codes <- function(values, levels) {
+  code <- match(values, levels) - 1L
+  code[is.na(code)] <- -1L
+  code
+}
+
+## Image codes for "search within each image": NA images get -1 (no image).
+.pace_image_codes <- function(image) {
+  image <- as.character(image)
+  image_levels <- unique(image)
+  image_levels <- image_levels[!is.na(image_levels)]
+  list(code = .pace_codes(image, image_levels), n_images = length(image_levels))
+}
+
+## Counts as a double dgCMatrix, cells x genes (no copy when already one).
+.pace_as_dgc <- function(Y) {
+  if (methods::is(Y, "dgCMatrix")) return(Y)
+  methods::as(methods::as(methods::as(Y, "dMatrix"), "generalMatrix"), "CsparseMatrix")
+}
+
+## The quadrature angles of the edge correction, theta_k = 2 pi k / n_angles.
+.pace_edge_angles <- function(n_angles = 1000L) {
+  theta <- seq(0, 2 * pi, length.out = n_angles + 1L)[-1L]
+  list(cos = cos(theta), sin = sin(theta))
+}
+
+## ----------------------------------------------------------------------------
 ## Isotropic area-fraction edge correction.
 ## area_fraction(i) = area(disc(i, r) intersect image_rectangle) / (pi r^2),
-## approximated by angular quadrature over `n_angles` directions.
+## approximated by angular quadrature over `n_angles` directions:
+##   r_eff(theta) = min(r, distance to the rectangle edge along theta)
+##   area_fraction = (pi * sum_theta r_eff^2 / n_angles) / (pi * r^2)
+## Computed in C++ (src/core/neighbourhood.cpp); cells at least r from every edge
+## share one value, computed once.
 ## ----------------------------------------------------------------------------
 pace_area_fraction <- function(coords, r,
                                xmin = NULL, xmax = NULL,
                                ymin = NULL, ymax = NULL,
-                               n_angles = 1000L) {
+                               n_angles = 1000L, threads = 1L) {
+  coords <- .pace_coordinate_matrix(coords)
+  if (!nrow(coords)) return(numeric(0))
   if (is.null(xmin)) xmin <- min(coords[, 1])
   if (is.null(xmax)) xmax <- max(coords[, 1])
   if (is.null(ymin)) ymin <- min(coords[, 2])
   if (is.null(ymax)) ymax <- max(coords[, 2])
-  theta <- seq(0, 2 * pi, length.out = n_angles + 1L)[-1L]
-  cos_t <- cos(theta)
-  sin_t <- sin(theta)
-  n <- nrow(coords)
-  af <- numeric(n)
-  norm_factor <- pi * r^2
-  for (i in seq_len(n)) {
-    x0 <- coords[i, 1]
-    y0 <- coords[i, 2]
-    d_right  <- ifelse(cos_t > 0, (xmax - x0) / cos_t, Inf)
-    d_left   <- ifelse(cos_t < 0, (xmin - x0) / cos_t, Inf)
-    d_top    <- ifelse(sin_t > 0, (ymax - y0) / sin_t, Inf)
-    d_bottom <- ifelse(sin_t < 0, (ymin - y0) / sin_t, Inf)
-    d_max <- pmin(d_right, d_left, d_top, d_bottom)
-    r_eff <- pmin(r, d_max)
-    af[i] <- (pi * sum(r_eff^2) / n_angles) / norm_factor
-  }
-  af
+  angles <- .pace_edge_angles(n_angles)
+  pace_area_fraction_cpp(coords, r, xmin, xmax, ymin, ymax, angles$cos, angles$sin,
+                         .pace_thread_count(threads))
 }
 
 ## ----------------------------------------------------------------------------
@@ -70,45 +112,26 @@ pace_area_fraction <- function(coords, r,
 ## neighbour cell type within radius `eps`.
 ##   K_bio[i, c]  = sum_{j in type c, j != i} exp(-(d_ij / h_bio)^2)   (Gaussian)
 ##   K_tech[i, c] = sum_{j in type c, j != i} exp(-d_ij / h_tech)      (exponential)
+## Neighbours are found and summed in C++ on a grid, without storing pairs, with
+## the same distance arithmetic and summation order as the frNN + sparseMatrix
+## implementation it replaces. `per_image = TRUE`: images are separate samples,
+## so no cross-image neighbours; otherwise one physical section, global search.
 ## ----------------------------------------------------------------------------
 pace_neighbour_kernel <- function(coords, celltype, types, h_bio, h_tech, eps,
-                                  image = NULL, per_image = FALSE) {
+                                  image = NULL, per_image = FALSE, threads = 1L) {
+  coords <- .pace_coordinate_matrix(coords)
   n <- nrow(coords)
-  ct <- as.character(celltype)
+  neighbour_type <- .pace_codes(as.character(celltype), types)
+  group <- rep(-1L, n)
   if (per_image) {
-    ## images are separate samples (e.g. patients) -> no cross-image neighbours.
     stopifnot(!is.null(image))
-    i_ok <- integer(0); jc_ok <- integer(0); d_ok <- numeric(0)
-    for (im in unique(image)) {
-      rows <- which(image == im)
-      if (length(rows) < 2L) next
-      fr <- dbscan::frNN(coords[rows, , drop = FALSE], eps = eps)
-      i_loc <- rep.int(seq_along(rows), lengths(fr$id))
-      j_loc <- unlist(fr$id,   use.names = FALSE)
-      d_loc <- unlist(fr$dist, use.names = FALSE)
-      jc <- match(ct[rows][j_loc], types)
-      keep <- !is.na(jc)
-      i_ok  <- c(i_ok,  rows[i_loc[keep]])
-      jc_ok <- c(jc_ok, jc[keep])
-      d_ok  <- c(d_ok,  d_loc[keep])
-    }
-  } else {
-    ## one physical section -> global neighbours (cross-"slide" cells are real).
-    fr <- dbscan::frNN(coords, eps = eps)
-    i_vec <- rep.int(seq_len(n), lengths(fr$id))
-    j_vec <- unlist(fr$id,   use.names = FALSE)
-    d_vec <- unlist(fr$dist, use.names = FALSE)
-    jc <- match(ct[j_vec], types)
-    ok <- !is.na(jc)
-    i_ok  <- i_vec[ok]
-    d_ok  <- d_vec[ok]
-    jc_ok <- jc[ok]
+    group <- .pace_image_codes(image)$code
   }
-  ## sparseMatrix SUMS duplicate (i, type) entries -> correct kernel accumulation
-  K_tech <- as.matrix(Matrix::sparseMatrix(i = i_ok, j = jc_ok, x = exp(-d_ok / h_tech),
-                                           dims = c(n, length(types))))
-  K_bio <- as.matrix(Matrix::sparseMatrix(i = i_ok, j = jc_ok, x = exp(-d_ok^2 / h_bio^2),
-                                          dims = c(n, length(types))))
+  kernels <- pace_neighbour_kernels_cpp(coords, neighbour_type, length(types), group,
+                                        isTRUE(per_image), h_bio, h_tech, eps,
+                                        .pace_thread_count(threads))
+  K_tech <- kernels$K_tech
+  K_bio  <- kernels$K_bio
   colnames(K_tech) <- paste0(types, "_near")
   colnames(K_bio)  <- types
   list(K_bio = K_bio, K_tech = K_tech)
@@ -162,35 +185,41 @@ pace_center_within_image <- function(K_bio, celltype, image, types) {
 ## Returns the memory-light form: an (n_types x G) 0/1 mask + a length-n celltype
 ## index (1..n_types), expanded per cell inside the solver.
 ## ----------------------------------------------------------------------------
+## The per-type means and the same-type neighbour fractions are computed in C++
+## from the sparse counts (exactly as colMeans() and mean() compute them); the
+## anchor decision below stays in R.
 pace_anchors <- function(coords, Y, celltype, image, types,
                          homo_frac = 0.5, owner_thresh = 0.1, core_thresh = 0.1,
-                         verbose = TRUE) {
+                         verbose = TRUE, threads = 1L) {
   n <- nrow(Y)
-  type_means <- t(vapply(types,
-                         function(tt) colMeans(Y[celltype == tt, , drop = FALSE]),
-                         numeric(ncol(Y))))
-  rownames(type_means) <- types
-  colnames(type_means) <- colnames(Y)
+  threads <- .pace_thread_count(threads)
+  labels <- as.character(celltype)
+  if (anyNA(labels))
+    stop("cell-type labels must not be missing.", call. = FALSE)
+  counts <- .pace_as_dgc(Y)
+  type_code <- .pace_codes(labels, types)
+  type_means <- pace_group_column_means_cpp(counts, type_code, length(types),
+                                            detection = FALSE, n_threads = threads)
+  dimnames(type_means) <- list(types, colnames(Y))
 
-  ## same-type-neighbour fraction within 30 um, per image
-  same_frac <- rep(NA_real_, n)
-  for (s in unique(image)) {
-    si <- which(image == s)
-    if (length(si) < 50) next
-    ctl <- celltype[si]
-    fr  <- dbscan::frNN(coords[si, , drop = FALSE], eps = 30)
-    for (k in seq_along(si)) {
-      idk <- fr$id[[k]]
-      same_frac[si[k]] <- if (length(idk)) mean(ctl[idk] == ctl[k]) else 1
-    }
-  }
+  ## same-type-neighbour fraction within 30 um, per image of at least 50 cells
+  images <- .pace_image_codes(image)
+  same_frac <- pace_same_type_fraction_cpp(.pace_coordinate_matrix(coords),
+                                           .pace_codes(labels, unique(labels)),
+                                           images$code, images$n_images,
+                                           radius = 30, min_image_cells = 50L,
+                                           n_threads = threads)
   core <- which(same_frac >= homo_frac)
 
   ## clean profile from core cells (raw type-mean fallback when a type is sparse)
+  core_code <- rep(-1L, n)
+  core_code[core] <- type_code[core]
+  core_group_means <- pace_group_column_means_cpp(counts, core_code, length(types),
+                                                  detection = FALSE, n_threads = threads)
+  core_sizes <- tabulate(core_code[core_code >= 0L] + 1L, nbins = length(types))
   core_means <- type_means
-  for (X in types) {
-    idx <- core[celltype[core] == X]
-    if (length(idx) >= 20) core_means[X, ] <- colMeans(Y[idx, , drop = FALSE])
+  for (ti in seq_along(types)) {
+    if (core_sizes[ti] >= 20) core_means[ti, ] <- core_group_means[ti, ]
   }
   owner_mean <- apply(core_means, 2, max)
   owner_t    <- types[apply(core_means, 2, which.max)]
@@ -217,84 +246,55 @@ pace_anchors <- function(coords, Y, celltype, image, types,
 ##   W[i, j] = exp(-d_ij / h_tech) / area_fraction(i)   for cross-celltype
 ##             neighbours j within rad = 3 * h_tech of i (self excluded).
 ## Streaming identity: W %*% Y[, g] == dense E_tech[, g]. Validated on a few
-## random genes before the fit when `validate = TRUE`.
+## evenly spaced genes before the fit when `validate = TRUE`.
+## W and the edge fractions are built in C++ without storing neighbour pairs; the
+## validation recomputes E_tech independently from dbscan::frNN pairs.
 ## ----------------------------------------------------------------------------
 pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
-                               edge_correct = TRUE, validate = TRUE, verbose = TRUE) {
+                               edge_correct = TRUE, validate = TRUE, verbose = TRUE,
+                               threads = 1L) {
   n <- nrow(Y)
   rad <- 3 * h_tech
-  by_image <- split(seq_len(n), image)
+  coords <- .pace_coordinate_matrix(coords)
   ct_all <- as.character(celltype)
+  if (anyNA(ct_all))
+    stop("cell-type labels must not be missing.", call. = FALSE)
 
-  ## per-image edge area-fraction at r = rad
-  af <- rep(1, n)
-  if (edge_correct) {
-    for (si in seq_along(by_image)) {
-      rows <- by_image[[si]]
-      if (!length(rows)) next
-      ci <- coords[rows, , drop = FALSE]
-      af[rows] <- pace_area_fraction(ci, rad,
-                                     min(ci[, 1]), max(ci[, 1]),
-                                     min(ci[, 2]), max(ci[, 2]))
-    }
-  }
-
-  ## (i, j, w) triplets for the cross-celltype neighbour weights
-  ii_all <- vector("list", length(by_image))
-  jj_all <- vector("list", length(by_image))
-  ww_all <- vector("list", length(by_image))
-  for (si in seq_along(by_image)) {
-    rows <- by_image[[si]]
-    if (length(rows) < 2) next
-    ci <- coords[rows, , drop = FALSE]
-    nn <- dbscan::frNN(ci, eps = rad)
-    ct_im <- ct_all[rows]
-    i_loc <- rep.int(seq_along(rows), lengths(nn$id))
-    j_loc <- unlist(nn$id,   use.names = FALSE)
-    d_loc <- unlist(nn$dist, use.names = FALSE)
-    keep  <- ct_im[j_loc] != ct_im[i_loc]
-    if (!any(keep)) next
-    i_loc <- i_loc[keep]
-    j_loc <- j_loc[keep]
-    d_loc <- d_loc[keep]
-    i_glb <- rows[i_loc]
-    j_glb <- rows[j_loc]
-    w_glb <- exp(-d_loc / h_tech) / af[i_glb]   ## edge correction folds into row i
-    ii_all[[si]] <- i_glb
-    jj_all[[si]] <- j_glb
-    ww_all[[si]] <- w_glb
-  }
-  ii <- unlist(ii_all, use.names = FALSE)
-  jj <- unlist(jj_all, use.names = FALSE)
-  ww <- unlist(ww_all, use.names = FALSE)
-  W <- Matrix::sparseMatrix(i = ii, j = jj, x = ww, dims = c(n, n))
-  W <- methods::as(W, "CsparseMatrix")
+  ## images as split() groups them: factor levels, NA in no image
+  image_factor <- as.factor(image)
+  image_code <- as.integer(image_factor) - 1L
+  image_code[is.na(image_code)] <- -1L
+  angles <- .pace_edge_angles()
+  field <- pace_ambient_field_cpp(coords, .pace_codes(ct_all, unique(ct_all)), image_code,
+                                  nlevels(image_factor), h_tech, isTRUE(edge_correct),
+                                  angles$cos, angles$sin, .pace_thread_count(threads))
+  af <- field$edge_fraction
+  W <- methods::new("dgCMatrix", i = field$i, p = field$p, x = field$x, Dim = c(n, n))
 
   ## cheap correctness gate: W %*% Y == dense E_tech on a few spot-check genes.
   ## Genes are chosen deterministically (evenly spaced) so the check does not
   ## touch the global RNG state.
   if (validate) {
     spot_g <- unique(round(seq(1, ncol(Y), length.out = min(5L, ncol(Y)))))
+    Y_spot <- as.matrix(Y[, spot_g, drop = FALSE])
     E_spot <- matrix(0, n, length(spot_g))
+    by_image <- split(seq_len(n), image)
     for (si in seq_along(by_image)) {
       rows <- by_image[[si]]
       if (length(rows) < 2) next
-      ci <- coords[rows, , drop = FALSE]
-      nn <- dbscan::frNN(ci, eps = rad)
-      Y_im  <- Y[rows, spot_g, drop = FALSE]
+      nn <- dbscan::frNN(coords[rows, , drop = FALSE], eps = rad)
+      i_loc <- rep.int(seq_along(rows), lengths(nn$id))
+      j_loc <- unlist(nn$id,   use.names = FALSE)
+      d_loc <- unlist(nn$dist, use.names = FALSE)
       ct_im <- ct_all[rows]
-      for (i in seq_along(rows)) {
-        nbr <- nn$id[[i]]
-        if (!length(nbr)) next
-        dl <- nn$dist[[i]]
-        kk <- ct_im[nbr] != ct_im[i]
-        if (!any(kk)) next
-        w <- exp(-dl[kk] / h_tech)
-        E_spot[rows[i], ] <- as.numeric(crossprod(w, Y_im[nbr[kk], , drop = FALSE]))
-      }
-      E_spot[rows, ] <- E_spot[rows, , drop = FALSE] / af[rows]
+      keep  <- ct_im[j_loc] != ct_im[i_loc]
+      if (!any(keep)) next
+      weighted <- exp(-d_loc[keep] / h_tech) * Y_spot[rows[j_loc[keep]], , drop = FALSE]
+      sums <- rowsum(weighted, rows[i_loc[keep]])
+      target <- as.integer(rownames(sums))
+      E_spot[target, ] <- sums / af[target]
     }
-    a_spot <- as.matrix(W %*% Y[, spot_g, drop = FALSE])
+    a_spot <- as.matrix(W %*% Y_spot)
     max_id <- max(abs(a_spot - E_spot))
     if (verbose)
       message(sprintf("    [W identity check] max|W%%*%%Y - dense E_tech| over %d genes = %.3e",
@@ -481,6 +481,9 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   ## a locked fit, in which case the caller passes `types` explicitly).
   if (is.null(types)) types <- sort(unique(celltype_raw))
   df$celltype <- factor(celltype_raw, levels = types)
+  if (anyNA(df$celltype))
+    stop(sum(is.na(df$celltype)), " cell(s) have a missing cell type or one not in `types`; ",
+         "remove them or add their type to `types`.", call. = FALSE)
   df$imageID  <- factor(as.character(df[[image_col]]))
   ## optional max-per-celltype detection re-filter (no-op at det_min = 0.05)
   if (det_min > 0.05 + 1e-6) {
@@ -493,6 +496,9 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   }
   Y <- as.matrix(Y)
   df$nCount <- rowSums(Y)
+  ## sparse counts for the compiled neighbourhood/count code and the solver
+  Y_sparse <- .pace_as_dgc(Y)
+  if (!is.null(colnames(Y))) colnames(Y_sparse) <- colnames(Y)
   coords <- as.matrix(df[, coord_cols])
   if (verbose)
     message(sprintf("pace_fit_streaming: %d cells x %d genes; %d images",
@@ -500,7 +506,8 @@ pace_fit_streaming <- function(Y, df, types = NULL,
 
   ## ---- 2. neighbour kernels (+ sparse-pair drop + within-image centring) ----
   ker <- pace_neighbour_kernel(coords, df$celltype, types, h_bio, h_tech, eps,
-                               image = df$imageID, per_image = kernel_per_image)
+                               image = df$imageID, per_image = kernel_per_image,
+                               threads = threads)
   K_bio  <- ker$K_bio
   K_tech <- ker$K_tech
   if (drop_sparse_neff > 0)
@@ -558,14 +565,16 @@ pace_fit_streaming <- function(Y, df, types = NULL,
 
   ## ---- 4. anchors + sparse ambient field ----
   anchors <- if (contamination == "percell_hc")
-    pace_anchors(coords, Y, df$celltype, df$imageID, types, homo_frac, verbose = verbose)
+    pace_anchors(coords, Y_sparse, df$celltype, df$imageID, types, homo_frac,
+                 verbose = verbose, threads = threads)
   else NULL
   ambient_W <- NULL
   ambient_image_idx <- NULL
   ambient_n_images <- 0L
   if (use_etech) {
-    amb <- pace_ambient_field(coords, Y, df$celltype, df$imageID, types, h_tech,
-                              edge_correct = edge_correct, verbose = verbose)
+    amb <- pace_ambient_field(coords, Y_sparse, df$celltype, df$imageID, types, h_tech,
+                              edge_correct = edge_correct, verbose = verbose,
+                              threads = threads)
     ambient_W <- amb$W
     ambient_image_idx <- amb$image_idx
     ambient_n_images <- amb$n_images
@@ -576,9 +585,9 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   if (data_informed_tau) {
     re_tmp <- build_random_design_multi(df, re_specs)
     data_informed_W <- .compute_data_informed_weights(
-      re = re_tmp, Y = Y, df = df,
+      re = re_tmp, Y = Y_sparse, df = df,
       focals = re_tmp$blocks[[1]]$group_levels, TYPES = types,
-      celltype_col = "celltype", verbose = verbose)
+      celltype_col = "celltype", verbose = verbose, threads = threads)
     rm(re_tmp)
   }
 
@@ -589,9 +598,6 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   ## solver (the same solver the streaming path is byte-identical against;
   ## feasible for targeted panels). The percell_hc path is unchanged.
   if (contamination == "percell_hc") {
-    Y_sparse <- methods::as(methods::as(methods::as(Y, "dMatrix"), "generalMatrix"),
-                            "CsparseMatrix")
-    if (!is.null(colnames(Y))) colnames(Y_sparse) <- colnames(Y)
     fit <- fit_pace_mvpql_streaming(
       Y = Y_sparse, X_fixed = X_fixed, df = df, re_specs = re_specs,
       offset_vec = offset_vec, data_informed_W = data_informed_W,

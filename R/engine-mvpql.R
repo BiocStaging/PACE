@@ -274,7 +274,7 @@ build_random_design_multi <- function(df, re_specs) {
 ##   tau_g_array <- tau_g_array * W
 .compute_data_informed_weights <- function(re, Y, df, focals, TYPES,
                                             celltype_col = "celltype",
-                                            verbose = TRUE) {
+                                            verbose = TRUE, threads = 1L) {
   q <- ncol(re$Z); G <- ncol(Y)
   W <- matrix(1, q, G, dimnames = list(colnames(re$Z), colnames(Y)))
   if (!(celltype_col %in% names(df))) {
@@ -284,13 +284,18 @@ build_random_design_multi <- function(df, re_specs) {
   }
   ct_chr <- as.character(df[[celltype_col]])
 
-  ## Detection rate per (focal, gene)
+  ## Detection rate per (focal, gene): mean of (Y > 0) over the focal's cells,
+  ## computed in C++ from the sparse counts exactly as colMeans(Y[cells, ] > 0).
+  ## A focal with no cells keeps rate 0.
   det_rate <- matrix(0, length(focals), G,
                      dimnames = list(focals, colnames(Y)))
-  for (f in focals) {
-    cells <- which(ct_chr == f)
-    if (!length(cells)) next
-    det_rate[f, ] <- colMeans(Y[cells, , drop = FALSE] > 0)
+  focal_code <- .pace_codes(ct_chr, focals)
+  det_means <- pace_group_column_means_cpp(.pace_as_dgc(Y), focal_code, length(focals),
+                                           detection = TRUE,
+                                           n_threads = .pace_thread_count(threads))
+  focal_sizes <- tabulate(focal_code[focal_code >= 0L] + 1L, nbins = length(focals))
+  for (f_index in seq_along(focals)) {
+    if (focal_sizes[f_index] > 0L) det_rate[f_index, ] <- det_means[f_index, ]
   }
 
   ## K-variance per (focal, neighbour) from raw df columns if present
