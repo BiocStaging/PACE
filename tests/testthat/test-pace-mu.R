@@ -1,6 +1,9 @@
-# The fitted means and the contamination log-offset are rebuilt from the fit
-# rather than stored. The rebuild must be exact: it feeds the decomposition, and
-# a near-miss would move published variance shares without failing.
+# The decomposition and driver scores read per-cell-type statistics of the
+# fitted means. A fit made by this version stores them; an older fit has them
+# computed from its stored n x G matrices, or rebuilt from the fit and the counts
+# when those were stripped. The packaged example fit is such a stripped older fit,
+# so these tests exercise the rebuild, which must be exact: it feeds the
+# decomposition, and a near-miss would move published variance shares without failing.
 
 spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))
 fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
@@ -29,50 +32,59 @@ test_that("the spillover block survives the rebuild", {
   expect_gt(median(sp, na.rm = TRUE), 0)
 })
 
-test_that("stored matrices are returned untouched when present", {
+test_that("stored statistics are used as-is, and stored matrices when statistics are absent", {
+  object <- fit
+  sentinel <- list(version = 1L, mu_mean = "stored")
+  object@fit$stats <- sentinel
+  expect_identical(PACE:::.pace_fit_statistics(object, spe), sentinel)
+
   object <- fit
   n <- nrow(object@context$df)
   g <- length(object@context$genes)
   object@fit$mu                   <- matrix(1.5, n, g)
   object@fit$technical_offset_mat <- matrix(0.25, n, g)
-
-  parts <- PACE:::.pace_mu_parts(object, spe)
-  expect_identical(parts$mu, object@fit$mu)
-  expect_identical(parts$technical_offset_mat, object@fit$technical_offset_mat)
+  stats <- PACE:::.pace_fit_statistics(object)
+  expect_true(all(stats$mu_mean == 1.5))
+  expect_true(all(stats$toff_var == 0, na.rm = TRUE))
+  expect_true(stats$toff_any_nonzero)
+  expect_identical(rownames(stats$mu_mean), fit@cellTypes)
 })
 
 test_that("the rebuild uses the fit's own settings, not the exported defaults", {
   # ambientField() defaults to h_tech = 5; a fit made with another bandwidth
   # must not be handed that field. Perturbing the recorded value must move the
   # result, or the fit's settings are being ignored.
-  base <- PACE:::.pace_mu_parts(fit, spe)
+  base <- PACE:::.pace_fit_statistics(fit, spe)
   other <- fit
   other@params$h_tech <- 12
-  moved <- PACE:::.pace_mu_parts(other, spe)
-  expect_false(isTRUE(all.equal(base$mu, moved$mu)))
+  moved <- PACE:::.pace_fit_statistics(other, spe)
+  expect_false(isTRUE(all.equal(base$mu_mean, moved$mu_mean)))
+  expect_false(isTRUE(all.equal(base$toff_var, moved$toff_var)))
 
   other2 <- fit
   other2@params$edge_correct <- !fit@params$edge_correct
-  expect_false(isTRUE(all.equal(base$mu, PACE:::.pace_mu_parts(other2, spe)$mu)))
+  expect_false(isTRUE(all.equal(base$toff_var, PACE:::.pace_fit_statistics(other2, spe)$toff_var)))
 })
 
 test_that("a fit predating edge_correct is refused rather than guessed at", {
   object <- fit
   object@params$edge_correct <- NULL
-  expect_error(PACE:::.pace_mu_parts(object, spe), "edge_correct")
+  expect_error(PACE:::.pace_fit_statistics(object, spe), "edge_correct")
 })
 
 test_that("contamination = none rebuilds no spillover", {
   object <- fit
   object@params$contamination   <- "none"
   object@fit$percell_bleed_rho  <- NULL
-  parts <- PACE:::.pace_mu_parts(object, spe)
-  expect_true(all(parts$technical_offset_mat == 0))
-  expect_true(all(parts$mu >= 1e-6))
+  stats <- PACE:::.pace_fit_statistics(object, spe)
+  expect_false(stats$toff_any_nonzero)
+  expect_true(all(stats$toff_var == 0, na.rm = TRUE))
+  expect_true(all(stats$mu_mean >= 1e-6))
 })
 
 test_that("a mismatched spe is refused", {
-  expect_error(PACE:::.pace_mu_parts(fit, spe[, 1:100]), "cells but the fit has")
+  expect_error(PACE:::.pace_fit_statistics(fit, spe[, 1:100]), "cells but the fit has")
+  expect_error(paceDecompose(fit, spe[, 1:100]), "cells but the fit has")
 })
 
 test_that("the packaged fit re-scores to exactly its stored driver tables", {
@@ -99,25 +111,24 @@ test_that("a stripped fit without spe is refused, not scored empty", {
   expect_error(paceDrivers(fit, list(c("Macrophage", "Tumour"))), "pass pairs by name")
 })
 
-test_that("chunked cell-type means match the means of the whole rebuilt mu", {
-  # paceDrivers() averages mu a block of cells at a time so the n x G matrix is
-  # never held. Block boundaries must not change the answer, including a block
-  # size that does not divide the number of cells.
-  full_mu <- PACE:::.pace_mu_parts(fit, spe)$mu
-  types <- fit@cellTypes
-  intercepts <- fit@fit$re_meta$Z[, paste0(types, "::(Intercept)"), drop = FALSE]
-  reference <- t(vapply(types, function(ct)
-    colMeans(full_mu[intercepts[, paste0(ct, "::(Intercept)")] != 0, , drop = FALSE]),
-    numeric(ncol(full_mu))))
-
-  for (chunk in c(nrow(full_mu), 1000L, 777L)) {
-    means <- PACE:::.pace_mu_means_by_celltype(fit, spe, chunk_size = chunk)
-    expect_identical(dimnames(means), dimnames(reference))
-    expect_equal(means, reference, tolerance = 1e-10)
+test_that("the gene-block rebuild does not depend on the block size", {
+  # A stripped fit is rebuilt a block of genes at a time, so the n x G matrix is
+  # never held. Block boundaries must not change the statistics, including a
+  # block that does not divide the number of genes, and they must equal the
+  # statistics of the whole rebuilt matrices.
+  n <- nrow(fit@context$df)
+  inputs <- PACE:::.pace_mu_inputs(fit, spe)
+  whole <- PACE:::.pace_mu_block(fit, NULL, inputs)
+  whole_mu <- pmax(whole$mu_bio + whole$mu_spill, 1e-6)
+  whole_toff <- log1p(whole$mu_spill / whole$mu_bio)
+  reference <- PACE:::.pace_statistics_from_matrices(whole_mu, whole_toff,
+                                                     as.character(fit@context$df$celltype),
+                                                     fit@cellTypes, fit@context$genes)
+  for (genes_per_block in c(length(fit@context$genes), 100L, 37L, 1L)) {
+    rebuilt <- PACE:::.pace_statistics_by_rebuild(fit, spe, max_block_entries = n * genes_per_block)
+    expect_identical(rebuilt$toff_any_nonzero, reference$toff_any_nonzero)
+    expect_identical(dimnames(rebuilt$mu_mean), dimnames(reference$mu_mean))
+    expect_equal(rebuilt$mu_mean, reference$mu_mean, tolerance = 1e-10)
+    expect_equal(rebuilt$toff_var, reference$toff_var, tolerance = 1e-10)
   }
-
-  # a fit that stores mu is averaged directly, to the same values
-  stored <- fit
-  stored@fit$mu <- full_mu
-  expect_equal(PACE:::.pace_mu_means_by_celltype(stored), reference, tolerance = 1e-10)
 })
