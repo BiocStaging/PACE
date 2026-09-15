@@ -212,3 +212,121 @@ test_that("cells without a modelled cell type are refused with a clear error", {
                          threads = 1L, verbose = FALSE),
                "not in `types`")
 })
+
+test_that("same-type fractions match the reference, including cells with no neighbours", {
+  skip_if_not_installed("SpatialExperiment")
+  spe <- bc_crop()
+  coords <- SpatialExperiment::spatialCoords(spe)
+  Y <- t(as.matrix(SummarizedExperiment::assay(spe, "counts")))
+  ct <- spe$cellType
+  types <- sort(unique(ct))
+  image <- synthetic_images(coords)
+  image[3:10] <- "small"
+  coords[11, ] <- c(1e6, 1e6)   # isolated cell inside a large image: fraction 1
+  labels <- as.character(ct)
+  new_fraction <- PACE:::pace_same_type_fraction_cpp(coords, PACE:::.pace_codes(labels, unique(labels)),
+                                                     PACE:::.pace_image_codes(image)$code,
+                                                     radius = 30, min_image_cells = 50L, n_threads = 2L)
+  ref_fraction <- reference_anchors(coords, Y, factor(ct, levels = types), image, types)$same_frac
+  expect_identical(new_fraction, ref_fraction)
+  expect_identical(new_fraction[11], 1)
+  expect_true(all(is.na(new_fraction[3:10])))
+})
+
+test_that("neighbour sets and distances equal frNN on boundary layouts", {
+  skip_if_not_installed("dbscan")
+  set.seed(12)
+  compare_sets <- function(coords, eps) {
+    lists <- PACE:::pace_neighbour_lists_cpp(coords, rep(-1L, nrow(coords)), FALSE, eps, 2L)
+    reference <- dbscan::frNN(coords, eps = eps)
+    offsets <- lists$offsets
+    for (i in seq_len(nrow(coords))) {
+      span <- if (offsets[i + 1] > offsets[i]) (offsets[i] + 1):offsets[i + 1] else integer(0)
+      ref_order <- order(reference$id[[i]])
+      if (!identical(lists$neighbours[span], reference$id[[i]][ref_order]) ||
+          !identical(lists$distances[span], reference$dist[[i]][ref_order])) {
+        return(FALSE)
+      }
+    }
+    TRUE
+  }
+  lattice <- as.matrix(expand.grid(0:25, 0:25)) + 0
+  expect_true(compare_sets(lattice, 1))
+  expect_true(compare_sets(lattice, 2))
+  origin <- cbind(stats::runif(3000, 0, 300), stats::runif(3000, 0, 300))
+  pairs <- rbind(origin, origin + 7.3 * cbind(0.6, 0.8)[rep(1, 3000), ])
+  expect_true(compare_sets(pairs, 7.3))
+  edge_x <- rep(c(0, 15, 30, 45), each = 3) * c(1, 1 + .Machine$double.eps, 1 - .Machine$double.eps)
+  edge <- cbind(c(edge_x, edge_x), c(rep(0, 12), rep(15, 12)))
+  expect_true(compare_sets(edge, 15))
+  duplicates <- rbind(c(2, 2), c(2, 2), c(2, 3), c(9, 9))
+  expect_true(compare_sets(duplicates, 1))
+})
+
+test_that("invalid radii and bandwidths are refused quickly instead of hanging", {
+  skip_if_not_installed("SpatialExperiment")
+  spe <- bc_crop(0.1)
+  coords <- SpatialExperiment::spatialCoords(spe)
+  ct <- spe$cellType
+  types <- sort(unique(ct))
+  Y <- PACE:::.pace_as_dgc(t(as.matrix(SummarizedExperiment::assay(spe, "counts"))))
+  image <- factor(rep("all", nrow(coords)))
+  setTimeLimit(elapsed = 30, transient = TRUE)
+  on.exit(setTimeLimit(elapsed = Inf), add = TRUE)
+  for (bad in list(0, -5, NaN, Inf, NA_real_)) {
+    expect_error(PACE:::pace_neighbour_kernel(coords, ct, types, 30, bad, 90), "h_tech")
+    expect_error(PACE:::pace_neighbour_kernel(coords, ct, types, bad, 5, 90), "h_bio")
+    expect_error(PACE:::pace_neighbour_kernel(coords, ct, types, 30, 5, bad), "eps")
+    expect_error(PACE:::pace_ambient_field(coords, Y, ct, image, types, bad, verbose = FALSE), "h_tech")
+    expect_error(PACE:::pace_area_fraction(coords, bad), "`r`")
+    # the compiled core refuses them too, independently of the R checks
+    expect_error(PACE:::pace_neighbour_counts_cpp(coords + 0, rep(-1L, nrow(coords)), FALSE, bad, 1L),
+                 "eps")
+    expect_error(PACE:::pace_neighbour_kernels_cpp(coords + 0, rep(0L, nrow(coords)), 1L,
+                                                   rep(-1L, nrow(coords)), FALSE, 30, bad, 90, 1L),
+                 "h_tech")
+  }
+  expect_error(paceModel(spe, celltype_col = "cellType", h_tech = 0, n_iter = 1L,
+                         threads = 1L, verbose = FALSE),
+               "h_tech")
+  expect_error(ambientField(spe, "cellType", h_tech = 0, verbose = FALSE), "h_tech")
+})
+
+test_that("non-finite coordinates, a third coordinate column and non-finite counts are refused", {
+  skip_if_not_installed("SpatialExperiment")
+  spe <- bc_crop(0.1)
+  coords <- SpatialExperiment::spatialCoords(spe)
+  ct <- spe$cellType
+  types <- sort(unique(ct))
+  for (bad_value in c(Inf, -Inf, NaN, NA)) {
+    bad <- coords
+    bad[5, 1] <- bad_value
+    expect_error(PACE:::pace_neighbour_kernel(bad, ct, types, 30, 5, 90), "finite")
+    expect_error(PACE:::pace_neighbour_counts_cpp(bad + 0, rep(-1L, nrow(bad)), FALSE, 90, 1L),
+                 "finite")
+  }
+  expect_error(PACE:::pace_neighbour_kernel(cbind(coords, z = 0), ct, types, 30, 5, 90),
+               "exactly two columns")
+  Y <- t(as.matrix(SummarizedExperiment::assay(spe, "counts")))
+  Y[1, 1] <- NA
+  expect_error(PACE:::pace_anchors(coords, Y, ct, rep("all", nrow(Y)), types, verbose = FALSE),
+               "finite")
+  counts <- PACE:::.pace_as_dgc(t(as.matrix(SummarizedExperiment::assay(spe, "counts"))))
+  counts@x[1] <- NaN
+  expect_error(PACE:::pace_group_column_means_cpp(counts, rep(0L, nrow(counts)), 1L, TRUE, 1L), "finite")
+})
+
+test_that("DelayedArray assays work in anchorGenes() and ambientField()", {
+  skip_if_not_installed("SpatialExperiment")
+  skip_if_not_installed("DelayedArray")
+  spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))
+  delayed <- spe
+  SummarizedExperiment::assay(delayed, "counts", withDimnames = FALSE) <-
+    DelayedArray::DelayedArray(as.matrix(SummarizedExperiment::assay(spe, "counts")))
+  expect_s4_class(SummarizedExperiment::assay(delayed, "counts"), "DelayedMatrix")
+  fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
+  expect_identical(suppressMessages(suppressWarnings(anchorGenes(fit, delayed))),
+                   suppressMessages(suppressWarnings(anchorGenes(fit, spe))))
+  expect_identical(ambientField(delayed, "cellType", verbose = FALSE),
+                   ambientField(spe, "cellType", verbose = FALSE))
+})
