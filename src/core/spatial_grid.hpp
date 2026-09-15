@@ -95,21 +95,33 @@ class SpatialGrid {
     }
     const double width = x_max - x_min_;
     const double height = y_max - y_min_;
+    // The bin count is bounded by max_bins (O(n) memory) for any radius and extent.
+    // A larger bin side only adds candidates, never misses pairs, so the search
+    // stays exact; when no finite side satisfies the bound (e.g. a denormal radius
+    // over an astronomically large extent) the grid degrades to a single bin.
     const double max_bins = 2.0 * static_cast<double>(cells_.size()) + 16.0;
+    auto bin_count = [&](double side) {
+      return (std::floor(width / side) + 1.0) * (std::floor(height / side) + 1.0);
+    };
     bin_side_ = radius_;
-    // Doubling keeps the bin count bounded for any extent, including very long,
-    // thin sections; a larger bin side only adds candidates, never misses pairs.
-    // The loop is capped (2^1100 exceeds any finite double) so it cannot spin.
-    const bool usable_geometry = std::isfinite(bin_side_) && bin_side_ > 0.0 &&
-                                 std::isfinite(width) && std::isfinite(height);
+    bool usable_geometry = std::isfinite(bin_side_) && bin_side_ > 0.0 &&
+                           std::isfinite(width) && std::isfinite(height);
     if (usable_geometry) {
-      for (int doubling = 0; doubling < 1100; ++doubling) {
-        const double bins = (std::floor(width / bin_side_) + 1.0) * (std::floor(height / bin_side_) + 1.0);
-        if (bins <= max_bins) break;
+      // Start at the smallest side that could satisfy the bound, then double.
+      const double side_for_width = width / max_bins;
+      const double side_for_height = height / max_bins;
+      const double side_for_area = std::sqrt(width / max_bins) * std::sqrt(height);
+      bin_side_ = std::max({radius_, side_for_width, side_for_height, side_for_area});
+      for (int doubling = 0; doubling < 64 && std::isfinite(bin_side_); ++doubling) {
+        const double bins = bin_count(bin_side_);
+        if (std::isfinite(bins) && bins <= max_bins) break;
         bin_side_ *= 2.0;
       }
+      const double bins = std::isfinite(bin_side_) ? bin_count(bin_side_) : 0.0;
+      usable_geometry = std::isfinite(bin_side_) && bin_side_ > 0.0 &&
+                        std::isfinite(bins) && bins <= max_bins;
     }
-    if (!usable_geometry || !std::isfinite(bin_side_)) {
+    if (!usable_geometry) {
       // Degenerate input (callers validate radius and coordinates first): a single bin.
       bin_side_ = std::numeric_limits<double>::infinity();
       n_bins_x_ = 1;

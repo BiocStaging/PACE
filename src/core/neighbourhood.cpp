@@ -353,6 +353,8 @@ Status AmbientFieldBuilder::prepare(Span<const double> x, Span<const double> y,
   if (!status.is_ok()) return status;
   status = check_positive(h_tech, "h_tech");
   if (!status.is_ok()) return status;
+  status = check_positive(3.0 * h_tech, "3 * h_tech (the ambient radius)");
+  if (!status.is_ok()) return status;
   status = check_finite_coordinates(x, y);
   if (!status.is_ok()) return status;
 

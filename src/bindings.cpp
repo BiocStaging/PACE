@@ -81,8 +81,9 @@ Rcpp::IntegerVector pace_neighbour_counts_cpp(const Rcpp::NumericMatrix& coords,
   return counts;
 }
 
-// Neighbour lists (test helper): list(offsets = n + 1 integer offsets, neighbours =
-// 1-based cell indices sorted within each cell, distances).
+// Neighbour lists (test helper): list(offsets = n + 1 offsets stored as doubles
+// (exact up to 2^53, beyond the int range), neighbours = 1-based cell indices sorted
+// within each cell, distances).
 // [[Rcpp::export]]
 Rcpp::List pace_neighbour_lists_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& group,
                                     bool per_group, double eps, int n_threads) {
