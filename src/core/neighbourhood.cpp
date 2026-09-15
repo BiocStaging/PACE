@@ -69,6 +69,23 @@ GroupGrids build_grids(Span<const double> x, Span<const double> y, Span<const in
   return out;
 }
 
+// A radius or bandwidth must be finite and strictly positive.
+Status check_positive(double value, const char* name) {
+  if (std::isfinite(value) && value > 0.0) return Status::success();
+  return Status::failure(StatusCode::invalid_argument,
+                         std::string(name) + " must be a finite number greater than 0");
+}
+
+// Every coordinate must be finite (no NA, NaN or Inf).
+Status check_finite_coordinates(Span<const double> x, Span<const double> y) {
+  for (std::int64_t i = 0; i < x.size; ++i) {
+    if (!std::isfinite(x[i]) || !std::isfinite(y[i])) {
+      return Status::failure(StatusCode::invalid_argument, "coordinates must be finite");
+    }
+  }
+  return Status::success();
+}
+
 Status check_same_length(std::int64_t expected, std::int64_t actual, const char* name) {
   if (expected == actual) return Status::success();
   return Status::failure(StatusCode::invalid_argument,
@@ -149,7 +166,14 @@ Status neighbour_kernels(Span<const double> x, Span<const double> y,
   if (!status.is_ok()) return status;
   status = check_same_length(n * n_types, k_tech.size, "k_tech");
   if (!status.is_ok()) return status;
-  if (!(eps > 0.0)) return Status::failure(StatusCode::invalid_argument, "eps must be positive");
+  status = check_positive(eps, "eps");
+  if (!status.is_ok()) return status;
+  status = check_positive(h_bio, "h_bio");
+  if (!status.is_ok()) return status;
+  status = check_positive(h_tech, "h_tech");
+  if (!status.is_ok()) return status;
+  status = check_finite_coordinates(x, y);
+  if (!status.is_ok()) return status;
 
   const GroupGrids grids = build_grids(x, y, group, per_group, eps, 2);
   const double h_bio_sq = h_bio * h_bio;
@@ -194,6 +218,12 @@ Status neighbour_counts(Span<const double> x, Span<const double> y,
   if (!status.is_ok()) return status;
   status = check_same_length(n, group.size, "group");
   if (!status.is_ok()) return status;
+  status = check_same_length(n, y.size, "y");
+  if (!status.is_ok()) return status;
+  status = check_positive(eps, "eps");
+  if (!status.is_ok()) return status;
+  status = check_finite_coordinates(x, y);
+  if (!status.is_ok()) return status;
   const GroupGrids grids = build_grids(x, y, group, per_group, eps, 2);
   auto body = [&](std::int64_t begin, std::int64_t end) {
     for (std::int64_t i = begin; i < end; ++i) {
@@ -209,11 +239,58 @@ Status neighbour_counts(Span<const double> x, Span<const double> y,
   return parallel_for(n, n_threads, kCellBlock, body, interrupted);
 }
 
+Status neighbour_lists(Span<const double> x, Span<const double> y,
+                       Span<const int> group, bool per_group, double eps,
+                       std::vector<std::int64_t>& offsets, std::vector<int>& neighbours,
+                       std::vector<double>& distances, int n_threads,
+                       const InterruptCheck& interrupted) {
+  const std::int64_t n = x.size;
+  std::vector<int> counts(n, 0);
+  Status status = neighbour_counts(x, y, group, per_group, eps,
+                                   Span<int>(counts.data(), n), n_threads, interrupted);
+  if (!status.is_ok()) return status;
+  offsets.assign(n + 1, 0);
+  for (std::int64_t i = 0; i < n; ++i) offsets[i + 1] = offsets[i] + counts[i];
+  neighbours.assign(offsets[n], 0);
+  distances.assign(offsets[n], 0.0);
+  const GroupGrids grids = build_grids(x, y, group, per_group, eps, 2);
+
+  struct Entry {
+    int cell;
+    double distance;
+  };
+
+  auto body = [&](std::int64_t begin, std::int64_t end) {
+    std::vector<Entry> entries;
+    for (std::int64_t i = begin; i < end; ++i) {
+      const int grid_id = grids.grid_of_cell[i];
+      if (grid_id < 0) continue;
+      entries.clear();
+      grids.grids[grid_id].for_each_neighbour(static_cast<std::int32_t>(i), [&](std::int32_t j, double d) {
+        entries.push_back(Entry{j, d});
+      });
+      std::sort(entries.begin(), entries.end(),
+                [](const Entry& a, const Entry& b) { return a.cell < b.cell; });
+      std::int64_t position = offsets[i];
+      for (const Entry& entry : entries) {
+        neighbours[position] = entry.cell;
+        distances[position] = entry.distance;
+        position += 1;
+      }
+    }
+  };
+  return parallel_for(n, n_threads, kCellBlock, body, interrupted);
+}
+
 Status area_fractions(Span<const double> x, Span<const double> y, Span<const int> rows,
                       double r, double x_min, double x_max, double y_min, double y_max,
                       Span<const double> cos_theta, Span<const double> sin_theta,
                       Span<double> fraction, int n_threads, const InterruptCheck& interrupted) {
-  Status status = check_same_length(rows.size, fraction.size, "fraction");
+  Status status = check_positive(r, "r");
+  if (!status.is_ok()) return status;
+  status = check_finite_coordinates(x, y);
+  if (!status.is_ok()) return status;
+  status = check_same_length(rows.size, fraction.size, "fraction");
   if (!status.is_ok()) return status;
   status = check_same_length(cos_theta.size, sin_theta.size, "sin_theta");
   if (!status.is_ok()) return status;
@@ -273,6 +350,10 @@ Status AmbientFieldBuilder::prepare(Span<const double> x, Span<const double> y,
   status = check_same_length(n, image.size, "image");
   if (!status.is_ok()) return status;
   status = check_same_length(n, edge_fraction.size, "edge_fraction");
+  if (!status.is_ok()) return status;
+  status = check_positive(h_tech, "h_tech");
+  if (!status.is_ok()) return status;
+  status = check_finite_coordinates(x, y);
   if (!status.is_ok()) return status;
 
   State& s = *state_;
@@ -390,7 +471,7 @@ Status AmbientFieldBuilder::fill(Span<int> row_index, Span<double> values,
 }
 
 Status same_type_fraction(Span<const double> x, Span<const double> y,
-                          Span<const int> type_code, Span<const int> image, int n_images,
+                          Span<const int> type_code, Span<const int> image,
                           double radius, int min_image_cells, Span<double> fraction,
                           int n_threads, const InterruptCheck& interrupted) {
   const std::int64_t n = x.size;
@@ -400,7 +481,10 @@ Status same_type_fraction(Span<const double> x, Span<const double> y,
   if (!status.is_ok()) return status;
   status = check_same_length(n, image.size, "image");
   if (!status.is_ok()) return status;
-  (void)n_images;
+  status = check_positive(radius, "radius");
+  if (!status.is_ok()) return status;
+  status = check_finite_coordinates(x, y);
+  if (!status.is_ok()) return status;
   const GroupGrids grids = build_grids(x, y, image, true, radius, min_image_cells);
   auto body = [&](std::int64_t begin, std::int64_t end) {
     for (std::int64_t i = begin; i < end; ++i) {

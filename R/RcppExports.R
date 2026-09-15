@@ -9,6 +9,10 @@ pace_neighbour_counts_cpp <- function(coords, group, per_group, eps, n_threads) 
     .Call(`_PACE_pace_neighbour_counts_cpp`, coords, group, per_group, eps, n_threads)
 }
 
+pace_neighbour_lists_cpp <- function(coords, group, per_group, eps, n_threads) {
+    .Call(`_PACE_pace_neighbour_lists_cpp`, coords, group, per_group, eps, n_threads)
+}
+
 pace_area_fraction_cpp <- function(coords, r, x_min, x_max, y_min, y_max, cos_theta, sin_theta, n_threads) {
     .Call(`_PACE_pace_area_fraction_cpp`, coords, r, x_min, x_max, y_min, y_max, cos_theta, sin_theta, n_threads)
 }
@@ -17,8 +21,8 @@ pace_ambient_field_cpp <- function(coords, type_code, image, n_images, h_tech, e
     .Call(`_PACE_pace_ambient_field_cpp`, coords, type_code, image, n_images, h_tech, edge_correct, cos_theta, sin_theta, n_threads)
 }
 
-pace_same_type_fraction_cpp <- function(coords, type_code, image, n_images, radius, min_image_cells, n_threads) {
-    .Call(`_PACE_pace_same_type_fraction_cpp`, coords, type_code, image, n_images, radius, min_image_cells, n_threads)
+pace_same_type_fraction_cpp <- function(coords, type_code, image, radius, min_image_cells, n_threads) {
+    .Call(`_PACE_pace_same_type_fraction_cpp`, coords, type_code, image, radius, min_image_cells, n_threads)
 }
 
 pace_group_column_means_cpp <- function(counts, group, n_groups, detection, n_threads) {

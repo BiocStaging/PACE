@@ -26,7 +26,7 @@ struct CscView {
 // order (zeros add nothing), then divided by the group size in long double and
 // rounded to double, which is exactly what colMeans() does. A group with no
 // cells gives NaN (0/0), as colMeans() of a zero-row matrix. Cells with group -1
-// belong to no group.
+// belong to no group. Non-finite values (NA, NaN, Inf) are refused.
 //
 // Shapes: group has n_rows entries with codes in [-1, n_groups). `means` is
 // caller-owned with n_groups * n_cols entries, column-major (groups x genes).

@@ -17,6 +17,9 @@
 
 namespace pace {
 
+// Every function refuses (Status invalid_argument) non-finite coordinates and
+// radii or bandwidths that are not finite and positive.
+
 // Neighbour kernels, accumulated per neighbour cell type.
 //
 //   K_tech[i, t] = sum over neighbours j of type t of exp(-d_ij / h_tech)
@@ -43,6 +46,15 @@ Status neighbour_kernels(Span<const double> x, Span<const double> y,
 Status neighbour_counts(Span<const double> x, Span<const double> y,
                         Span<const int> group, bool per_group, double eps,
                         Span<int> counts, int n_threads, const InterruptCheck& interrupted);
+
+// Neighbour lists under the same rules (test helper): for each cell i, in cell
+// order, its neighbours j (0-based) sorted by index, with their distances.
+// `offsets` gets n + 1 entries; `neighbours` and `distances` are appended.
+Status neighbour_lists(Span<const double> x, Span<const double> y,
+                       Span<const int> group, bool per_group, double eps,
+                       std::vector<std::int64_t>& offsets, std::vector<int>& neighbours,
+                       std::vector<double>& distances, int n_threads,
+                       const InterruptCheck& interrupted);
 
 // Isotropic edge correction for the cells `rows` against the rectangle
 // [x_min, x_max] x [y_min, y_max]: the fraction of the disc of radius r around
@@ -99,7 +111,7 @@ class AmbientFieldBuilder {
 // The ratio is (long double) same / count, rounded to double, as R's mean() of a
 // logical vector.
 Status same_type_fraction(Span<const double> x, Span<const double> y,
-                          Span<const int> type_code, Span<const int> image, int n_images,
+                          Span<const int> type_code, Span<const int> image,
                           double radius, int min_image_cells, Span<double> fraction,
                           int n_threads, const InterruptCheck& interrupted);
 

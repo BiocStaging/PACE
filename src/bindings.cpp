@@ -41,7 +41,7 @@ pace::Span<const double> double_span(const Rcpp::NumericVector& vector) {
 }
 
 void check_coordinates(const Rcpp::NumericMatrix& coords) {
-  if (coords.ncol() < 2) Rcpp::stop("coords must have two columns");
+  if (coords.ncol() != 2) Rcpp::stop("coords must have exactly two columns");
 }
 
 }  // namespace
@@ -81,6 +81,28 @@ Rcpp::IntegerVector pace_neighbour_counts_cpp(const Rcpp::NumericMatrix& coords,
   return counts;
 }
 
+// Neighbour lists (test helper): list(offsets = n + 1 integer offsets, neighbours =
+// 1-based cell indices sorted within each cell, distances).
+// [[Rcpp::export]]
+Rcpp::List pace_neighbour_lists_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& group,
+                                    bool per_group, double eps, int n_threads) {
+  check_coordinates(coords);
+  std::vector<std::int64_t> offsets;
+  std::vector<int> neighbours;
+  std::vector<double> distances;
+  const pace::Status status = pace::neighbour_lists(
+      column_span(coords, 0), column_span(coords, 1), int_span(group), per_group, eps,
+      offsets, neighbours, distances, n_threads, user_interrupted);
+  raise_if_failed(status, "neighbour lists");
+  Rcpp::NumericVector offsets_out(offsets.begin(), offsets.end());
+  Rcpp::IntegerVector neighbours_out(neighbours.size());
+  for (std::size_t k = 0; k < neighbours.size(); ++k) neighbours_out[k] = neighbours[k] + 1;
+  Rcpp::NumericVector distances_out(distances.begin(), distances.end());
+  return Rcpp::List::create(Rcpp::Named("offsets") = offsets_out,
+                            Rcpp::Named("neighbours") = neighbours_out,
+                            Rcpp::Named("distances") = distances_out);
+}
+
 // Edge fractions for all rows of coords against one rectangle (see pace::area_fractions).
 // [[Rcpp::export]]
 Rcpp::NumericVector pace_area_fraction_cpp(const Rcpp::NumericMatrix& coords, double r,
@@ -89,8 +111,9 @@ Rcpp::NumericVector pace_area_fraction_cpp(const Rcpp::NumericMatrix& coords, do
                                            const Rcpp::NumericVector& sin_theta, int n_threads) {
   check_coordinates(coords);
   const std::int64_t n = coords.nrow();
-  Rcpp::IntegerVector rows = Rcpp::seq(0, static_cast<int>(n) - 1);
   Rcpp::NumericVector fraction(n);
+  if (n == 0) return fraction;
+  Rcpp::IntegerVector rows = Rcpp::seq(0, static_cast<int>(n) - 1);
   const pace::Status status = pace::area_fractions(
       column_span(coords, 0), column_span(coords, 1), int_span(rows), r, x_min, x_max, y_min, y_max,
       double_span(cos_theta), double_span(sin_theta), pace::Span<double>(REAL(fraction), n),
@@ -135,13 +158,13 @@ Rcpp::List pace_ambient_field_cpp(const Rcpp::NumericMatrix& coords,
 // [[Rcpp::export]]
 Rcpp::NumericVector pace_same_type_fraction_cpp(const Rcpp::NumericMatrix& coords,
                                                 const Rcpp::IntegerVector& type_code,
-                                                const Rcpp::IntegerVector& image, int n_images,
+                                                const Rcpp::IntegerVector& image,
                                                 double radius, int min_image_cells, int n_threads) {
   check_coordinates(coords);
   const std::int64_t n = coords.nrow();
   Rcpp::NumericVector fraction(n);
   const pace::Status status = pace::same_type_fraction(
-      column_span(coords, 0), column_span(coords, 1), int_span(type_code), int_span(image), n_images,
+      column_span(coords, 0), column_span(coords, 1), int_span(type_code), int_span(image),
       radius, min_image_cells, pace::Span<double>(REAL(fraction), n), n_threads, user_interrupted);
   raise_if_failed(status, "same-type fraction");
   for (std::int64_t i = 0; i < n; ++i) {

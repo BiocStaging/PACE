@@ -23,7 +23,8 @@ class SpatialGrid {
  public:
   // x, y: coordinates of all n cells (caller-owned, alive while the grid is used).
   // cells: global indices (0-based) of the cells in this group.
-  // radius: search radius (> 0), in the units of x and y.
+  // radius: search radius, finite and > 0, in the units of x and y (callers
+  // validate it; a degenerate radius yields a single bin and no neighbours).
   SpatialGrid(Span<const double> x, Span<const double> y,
               std::vector<std::int32_t> cells, double radius)
       : x_(x), y_(y), cells_(std::move(cells)), radius_(radius) {
@@ -71,6 +72,7 @@ class SpatialGrid {
   // Bin of coordinate value v along an axis starting at `origin` with bin side
   // `bin_side_`, clamped to [0, n_bins - 1].
   std::int64_t bin_index(double v, double origin, std::int64_t n_bins) const {
+    if (n_bins <= 1) return 0;
     const double position = std::floor((v - origin) / bin_side_);
     if (!(position > 0.0)) return 0;  // also catches NaN
     if (position >= static_cast<double>(n_bins - 1)) return n_bins - 1;
@@ -97,11 +99,25 @@ class SpatialGrid {
     bin_side_ = radius_;
     // Doubling keeps the bin count bounded for any extent, including very long,
     // thin sections; a larger bin side only adds candidates, never misses pairs.
-    while ((std::floor(width / bin_side_) + 1.0) * (std::floor(height / bin_side_) + 1.0) > max_bins) {
-      bin_side_ *= 2.0;
+    // The loop is capped (2^1100 exceeds any finite double) so it cannot spin.
+    const bool usable_geometry = std::isfinite(bin_side_) && bin_side_ > 0.0 &&
+                                 std::isfinite(width) && std::isfinite(height);
+    if (usable_geometry) {
+      for (int doubling = 0; doubling < 1100; ++doubling) {
+        const double bins = (std::floor(width / bin_side_) + 1.0) * (std::floor(height / bin_side_) + 1.0);
+        if (bins <= max_bins) break;
+        bin_side_ *= 2.0;
+      }
     }
-    n_bins_x_ = static_cast<std::int64_t>(std::floor(width / bin_side_)) + 1;
-    n_bins_y_ = static_cast<std::int64_t>(std::floor(height / bin_side_)) + 1;
+    if (!usable_geometry || !std::isfinite(bin_side_)) {
+      // Degenerate input (callers validate radius and coordinates first): a single bin.
+      bin_side_ = std::numeric_limits<double>::infinity();
+      n_bins_x_ = 1;
+      n_bins_y_ = 1;
+    } else {
+      n_bins_x_ = static_cast<std::int64_t>(std::floor(width / bin_side_)) + 1;
+      n_bins_y_ = static_cast<std::int64_t>(std::floor(height / bin_side_)) + 1;
+    }
 
     const std::int64_t n_bins = n_bins_x_ * n_bins_y_;
     bin_start_.assign(n_bins + 1, 0);

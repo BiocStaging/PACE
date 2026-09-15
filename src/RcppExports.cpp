@@ -45,6 +45,21 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_neighbour_lists_cpp
+Rcpp::List pace_neighbour_lists_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& group, bool per_group, double eps, int n_threads);
+RcppExport SEXP _PACE_pace_neighbour_lists_cpp(SEXP coordsSEXP, SEXP groupSEXP, SEXP per_groupSEXP, SEXP epsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
+    Rcpp::traits::input_parameter< bool >::type per_group(per_groupSEXP);
+    Rcpp::traits::input_parameter< double >::type eps(epsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_neighbour_lists_cpp(coords, group, per_group, eps, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // pace_area_fraction_cpp
 Rcpp::NumericVector pace_area_fraction_cpp(const Rcpp::NumericMatrix& coords, double r, double x_min, double x_max, double y_min, double y_max, const Rcpp::NumericVector& cos_theta, const Rcpp::NumericVector& sin_theta, int n_threads);
 RcppExport SEXP _PACE_pace_area_fraction_cpp(SEXP coordsSEXP, SEXP rSEXP, SEXP x_minSEXP, SEXP x_maxSEXP, SEXP y_minSEXP, SEXP y_maxSEXP, SEXP cos_thetaSEXP, SEXP sin_thetaSEXP, SEXP n_threadsSEXP) {
@@ -84,19 +99,18 @@ BEGIN_RCPP
 END_RCPP
 }
 // pace_same_type_fraction_cpp
-Rcpp::NumericVector pace_same_type_fraction_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& type_code, const Rcpp::IntegerVector& image, int n_images, double radius, int min_image_cells, int n_threads);
-RcppExport SEXP _PACE_pace_same_type_fraction_cpp(SEXP coordsSEXP, SEXP type_codeSEXP, SEXP imageSEXP, SEXP n_imagesSEXP, SEXP radiusSEXP, SEXP min_image_cellsSEXP, SEXP n_threadsSEXP) {
+Rcpp::NumericVector pace_same_type_fraction_cpp(const Rcpp::NumericMatrix& coords, const Rcpp::IntegerVector& type_code, const Rcpp::IntegerVector& image, double radius, int min_image_cells, int n_threads);
+RcppExport SEXP _PACE_pace_same_type_fraction_cpp(SEXP coordsSEXP, SEXP type_codeSEXP, SEXP imageSEXP, SEXP radiusSEXP, SEXP min_image_cellsSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type coords(coordsSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type type_code(type_codeSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type image(imageSEXP);
-    Rcpp::traits::input_parameter< int >::type n_images(n_imagesSEXP);
     Rcpp::traits::input_parameter< double >::type radius(radiusSEXP);
     Rcpp::traits::input_parameter< int >::type min_image_cells(min_image_cellsSEXP);
     Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_same_type_fraction_cpp(coords, type_code, image, n_images, radius, min_image_cells, n_threads));
+    rcpp_result_gen = Rcpp::wrap(pace_same_type_fraction_cpp(coords, type_code, image, radius, min_image_cells, n_threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -162,9 +176,10 @@ END_RCPP
 static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_neighbour_kernels_cpp", (DL_FUNC) &_PACE_pace_neighbour_kernels_cpp, 9},
     {"_PACE_pace_neighbour_counts_cpp", (DL_FUNC) &_PACE_pace_neighbour_counts_cpp, 5},
+    {"_PACE_pace_neighbour_lists_cpp", (DL_FUNC) &_PACE_pace_neighbour_lists_cpp, 5},
     {"_PACE_pace_area_fraction_cpp", (DL_FUNC) &_PACE_pace_area_fraction_cpp, 9},
     {"_PACE_pace_ambient_field_cpp", (DL_FUNC) &_PACE_pace_ambient_field_cpp, 9},
-    {"_PACE_pace_same_type_fraction_cpp", (DL_FUNC) &_PACE_pace_same_type_fraction_cpp, 7},
+    {"_PACE_pace_same_type_fraction_cpp", (DL_FUNC) &_PACE_pace_same_type_fraction_cpp, 6},
     {"_PACE_pace_group_column_means_cpp", (DL_FUNC) &_PACE_pace_group_column_means_cpp, 5},
     {"_PACE_solve_chunk_full_cpp", (DL_FUNC) &_PACE_solve_chunk_full_cpp, 12},
     {"_PACE_solve_chunk_mb_cpp", (DL_FUNC) &_PACE_solve_chunk_mb_cpp, 11},

@@ -2,6 +2,7 @@
 #include "count_stats.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "thread_pool.hpp"
@@ -19,6 +20,12 @@ Status group_column_means(const CscView& counts, Span<const int> group, int n_gr
   }
   if (means.size != static_cast<std::int64_t>(n_groups) * counts.n_cols) {
     return Status::failure(StatusCode::invalid_argument, "output size differs from n_groups * n_cols");
+  }
+
+  for (std::int64_t k = 0; k < counts.values.size; ++k) {
+    if (!std::isfinite(counts.values[k])) {
+      return Status::failure(StatusCode::invalid_argument, "counts must be finite (no NA, NaN or Inf)");
+    }
   }
 
   std::vector<std::int64_t> group_size(n_groups, 0);

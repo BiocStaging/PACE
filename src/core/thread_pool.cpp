@@ -48,7 +48,12 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
     return Status::success();
   }
 
-  const int n_workers = static_cast<int>(std::min<std::int64_t>(n_threads, n_blocks));
+  // Never more workers than blocks, nor (when known) than hardware threads. The
+  // block partition does not depend on the worker count, so neither do results.
+  std::int64_t worker_cap = std::min<std::int64_t>(n_threads, n_blocks);
+  const unsigned hardware_threads = std::thread::hardware_concurrency();
+  if (hardware_threads > 0) worker_cap = std::min<std::int64_t>(worker_cap, hardware_threads);
+  const int n_workers = static_cast<int>(std::max<std::int64_t>(worker_cap, 1));
   std::atomic<std::int64_t> next_block{0};
   std::atomic<bool> stop{false};
   std::mutex state_mutex;
@@ -81,7 +86,16 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
 
   std::vector<std::thread> threads;
   threads.reserve(n_workers);
-  for (int t = 0; t < n_workers; ++t) threads.emplace_back(worker);
+  try {
+    for (int t = 0; t < n_workers; ++t) threads.emplace_back(worker);
+  } catch (const std::exception& error) {
+    // Could not start every worker: stop and join the ones that did start, so no
+    // joinable std::thread is destroyed (which would call std::terminate).
+    stop.store(true);
+    for (auto& thread : threads) thread.join();
+    return Status::failure(StatusCode::internal_error,
+                           std::string("could not start worker threads: ") + error.what());
+  }
 
   bool was_interrupted = false;
   {
