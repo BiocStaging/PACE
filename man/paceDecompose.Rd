@@ -26,9 +26,10 @@ cohorts), populating \code{\link[=varianceDecomposition]{varianceDecomposition()
 the same \code{SpatialExperiment} used for \code{\link[=paceModel]{paceModel()}} (to read the counts).
 }
 \details{
-The decomposition needs the fitted means. A fit that has had its \verb{n x G}
-matrices dropped to save space still carries everything needed to rebuild
-them exactly, so they are recomputed rather than required.
+The decomposition needs per-cell-type statistics of the fitted means, which
+the fit stores; it never builds a \verb{cells x genes} matrix. An older fit without
+those statistics has them computed from its stored fitted means, or, if those
+were dropped, rebuilt exactly from the fit and \code{spe} a block of genes at a time.
 }
 \examples{
 spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))

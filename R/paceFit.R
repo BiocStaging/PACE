@@ -11,6 +11,11 @@
 
   ## counts are genes x cells in an SPE; PACE wants cells x genes.
   Y <- t(as.matrix(SummarizedExperiment::assay(object, assay_name)))
+  ## a zero library size makes the log offset and log1p CP10k undefined
+  empty_cells <- sum(rowSums(Y) == 0)
+  if (empty_cells > 0L)
+    stop(empty_cells, " cell(s) have zero total counts; remove them before fitting.",
+         call. = FALSE)
   ## exactly two finite coordinate columns, refused (not dropped) otherwise
   coords <- .pace_coordinate_matrix(SpatialExperiment::spatialCoords(object))
   df <- cd
@@ -190,9 +195,10 @@ setMethod("paceShrink", "PACEFit", function(object, ...) {
 #' cohorts), populating [varianceDecomposition()]. Needs the fitted object plus
 #' the same `SpatialExperiment` used for [paceModel()] (to read the counts).
 #'
-#' The decomposition needs the fitted means. A fit that has had its `n x G`
-#' matrices dropped to save space still carries everything needed to rebuild
-#' them exactly, so they are recomputed rather than required.
+#' The decomposition needs per-cell-type statistics of the fitted means, which
+#' the fit stores; it never builds a `cells x genes` matrix. An older fit without
+#' those statistics has them computed from its stored fitted means, or, if those
+#' were dropped, rebuilt exactly from the fit and `spe` a block of genes at a time.
 #'
 #' @param object A [PACEFit] from [paceModel()].
 #' @param spe The [SpatialExperiment::SpatialExperiment] that was fitted.
@@ -206,23 +212,16 @@ setMethod("paceShrink", "PACEFit", function(object, ...) {
 #' @rdname paceDecompose
 #' @export
 setMethod("paceDecompose", "PACEFit", function(object, spe, ...) {
-  genes <- object@context$genes
-  Y  <- t(as.matrix(SummarizedExperiment::assay(spe, object@params$assay_name)))
-  Y  <- Y[, genes, drop = FALSE]
+  ## sparse cells x genes counts of the fitted genes, checked against the fit
+  Y  <- .pace_counts_for_fit(object, spe)
   df <- object@context$df
-  if (nrow(Y) != nrow(df))
-    stop("`spe` has ", nrow(Y), " cells but the fit has ", nrow(df),
-         "; pass the same object used for paceModel().", call. = FALSE)
-  ## The decomposition reads the fitted means cell by cell. A fit that had the
-  ## n x G matrices dropped to save space still carries everything needed to
-  ## rebuild them exactly, so rebuild rather than refuse.
-  parts <- .pace_mu_parts(object, spe)
-  fit_mu <- object@fit
-  fit_mu$mu                   <- parts$mu
-  fit_mu$technical_offset_mat <- parts$technical_offset_mat
-  fit_mu$bleed_offset_mat     <- parts$technical_offset_mat
-  dec <- pace_decompose(fit_mu, df, Y, object@cellTypes,
-                        object@context$X_fixed, resp_term = object@params$resp_term)
+  ## The decomposition needs only per-cell-type statistics of the fitted means:
+  ## stored by the solver at fit time, taken from the matrices of an older fit
+  ## that keeps them, or rebuilt a block of genes at a time for a stripped fit.
+  stats <- .pace_fit_statistics(object, spe)
+  dec <- pace_decompose(object@fit, df, Y, object@cellTypes,
+                        object@context$X_fixed, resp_term = object@params$resp_term,
+                        stats = stats)
   sf  <- .pace_single_frame(Y, df, object@params$celltype_col, dec,
                             has_condition = !is.null(object@params$condition_col))
   object@varianceDecomposition <- list(perGene = sf, blocks = dec)
@@ -239,14 +238,15 @@ setMethod("paceDecompose", "PACEFit", function(object, spe, ...) {
 #' populating [topDrivers()]. Requires [paceShrink()] and [paceDecompose()] to
 #' have run first.
 #'
-#' The driver scores read each cell type's mean fitted mean. For a fit saved
-#' without its `n x G` matrices these are rebuilt exactly from the fit and `spe`,
-#' as in [paceDecompose()], a block of cells at a time so the full matrix is
-#' never held; pass `spe` for such a fit.
+#' The driver scores read each cell type's mean fitted mean, which the fit
+#' stores. For an older fit saved without its fitted means or those statistics
+#' they are rebuilt exactly from the fit and `spe`, as in [paceDecompose()], a
+#' block of genes at a time; pass `spe` for such a fit.
 #'
 #' @param object A [PACEFit] with shrunken slopes and a decomposition.
 #' @param spe The [SpatialExperiment::SpatialExperiment] that was fitted. Needed
-#'   only when the fit does not store its fitted means.
+#'   only for an older fit that stores neither its fitted means nor their
+#'   per-cell-type statistics.
 #' @param pairs Optional list of focal-neighbour pairs to score; `NULL` scores
 #'   all pairs.
 #' @param ... Unused.
@@ -264,12 +264,12 @@ setMethod("paceDrivers", "PACEFit", function(object, spe = NULL, pairs = NULL, .
   if (!is.null(spe) && !methods::is(spe, "SpatialExperiment"))
     stop("`spe` must be the SpatialExperiment that was fitted; pass pairs by ",
          "name: paceDrivers(fit, spe, pairs = ...).", call. = FALSE)
-  if (is.null(object@fit$mu) && is.null(spe))
+  if (is.null(object@fit$stats) && is.null(object@fit$mu) && is.null(spe))
     stop("this fit was saved without its fitted means; pass the ",
          "SpatialExperiment it was fitted on: paceDrivers(fit, spe).", call. = FALSE)
-  ## The scores need only each cell type's mean fitted mean, so a stripped fit
-  ## rebuilds those chunk by chunk rather than the whole n x G matrix.
-  mu_means <- .pace_mu_means_by_celltype(object, spe)
+  ## The scores need only each cell type's mean fitted mean (a statistic stored
+  ## at fit time; rebuilt a block of genes at a time for an older stripped fit).
+  mu_means <- .pace_fit_statistics(object, spe)$mu_mean
   args <- list(object@fit, object@neighbourSlopes,
                object@varianceDecomposition$blocks, object@cellTypes,
                mu_means = mu_means, pairs = pairs)

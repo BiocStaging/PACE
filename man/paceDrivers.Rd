@@ -15,7 +15,8 @@ paceDrivers(object, ...)
 \item{...}{Unused.}
 
 \item{spe}{The \link[SpatialExperiment:SpatialExperiment]{SpatialExperiment::SpatialExperiment} that was fitted. Needed
-only when the fit does not store its fitted means.}
+only for an older fit that stores neither its fitted means nor their
+per-cell-type statistics.}
 
 \item{pairs}{Optional list of focal-neighbour pairs to score; \code{NULL} scores
 all pairs.}
@@ -29,9 +30,10 @@ populating \code{\link[=topDrivers]{topDrivers()}}. Requires \code{\link[=paceSh
 have run first.
 }
 \details{
-The driver scores read the fitted means. A fit saved without its \verb{n x G}
-matrices is rebuilt exactly from the fit and \code{spe}, as in \code{\link[=paceDecompose]{paceDecompose()}},
-so pass \code{spe} for such a fit.
+The driver scores read each cell type's mean fitted mean, which the fit
+stores. For an older fit saved without its fitted means or those statistics
+they are rebuilt exactly from the fit and \code{spe}, as in \code{\link[=paceDecompose]{paceDecompose()}}, a
+block of genes at a time; pass \code{spe} for such a fit.
 }
 \examples{
 spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))

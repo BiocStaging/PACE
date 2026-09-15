@@ -11,3 +11,5 @@
 ^docs$
 ^\.github$
 ^pkgdown$
+^src/core/.*\.o$
+^src/.*\.(o|so|dll)$
