@@ -7,12 +7,15 @@
 \usage{
 paceDrivers(object, ...)
 
-\S4method{paceDrivers}{PACEFit}(object, pairs = NULL, ...)
+\S4method{paceDrivers}{PACEFit}(object, spe = NULL, pairs = NULL, ...)
 }
 \arguments{
 \item{object}{A \link{PACEFit} with shrunken slopes and a decomposition.}
 
 \item{...}{Unused.}
+
+\item{spe}{The \link[SpatialExperiment:SpatialExperiment]{SpatialExperiment::SpatialExperiment} that was fitted. Needed
+only when the fit does not store its fitted means.}
 
 \item{pairs}{Optional list of focal-neighbour pairs to score; \code{NULL} scores
 all pairs.}
@@ -25,8 +28,14 @@ Ranks the genes mediating each focal-neighbour relationship by driver score,
 populating \code{\link[=topDrivers]{topDrivers()}}. Requires \code{\link[=paceShrink]{paceShrink()}} and \code{\link[=paceDecompose]{paceDecompose()}} to
 have run first.
 }
+\details{
+The driver scores read the fitted means. A fit saved without its \verb{n x G}
+matrices is rebuilt exactly from the fit and \code{spe}, as in \code{\link[=paceDecompose]{paceDecompose()}},
+so pass \code{spe} for such a fit.
+}
 \examples{
+spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))
 fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
-fit <- paceDrivers(fit)
+fit <- paceDrivers(fit, spe)
 names(topDrivers(fit))
 }

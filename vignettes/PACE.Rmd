@@ -116,7 +116,7 @@ downstream layers (shrinkage, decomposition, drivers) without refitting:
 fit <- paceModel(spe, celltype_col = "cellType")   |>  # fit the mixed model
        paceShrink()                                |>  # shrink neighbour slopes
        paceDecompose(spe)                          |>  # variance decomposition
-       paceDrivers()                                   # per-pair driver scores
+       paceDrivers(spe)                                # per-pair driver scores
 ```
 
 The fit-construction primitives expose the neighbourhood and contamination field
@@ -254,8 +254,9 @@ round(as.numeric(object.size(fit)) / 1e6, 1)   # MB
 ```
 
 and a whole section runs to several hundred megabytes. They do not have to be
-kept. `paceDecompose()` rebuilds them from the fit and the `SpatialExperiment`,
-exactly, so a fit can be saved without them and still be re-decomposed:
+kept. `paceDecompose()` and `paceDrivers()` rebuild them from the fit and the
+`SpatialExperiment`, exactly, so a fit can be saved without them and still be
+re-decomposed and re-scored (pass `spe` to both):
 
 ```{r fit-strip}
 fit_small <- fit

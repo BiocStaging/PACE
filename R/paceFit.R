@@ -239,21 +239,38 @@ setMethod("paceDecompose", "PACEFit", function(object, spe, ...) {
 #' populating [topDrivers()]. Requires [paceShrink()] and [paceDecompose()] to
 #' have run first.
 #'
+#' The driver scores read the fitted means. A fit saved without its `n x G`
+#' matrices is rebuilt exactly from the fit and `spe`, as in [paceDecompose()],
+#' so pass `spe` for such a fit.
+#'
 #' @param object A [PACEFit] with shrunken slopes and a decomposition.
+#' @param spe The [SpatialExperiment::SpatialExperiment] that was fitted. Needed
+#'   only when the fit does not store its fitted means.
 #' @param pairs Optional list of focal-neighbour pairs to score; `NULL` scores
 #'   all pairs.
 #' @param ... Unused.
 #' @return The `PACEFit` with the driver tables added.
 #' @examples
+#' spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))
 #' fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
-#' fit <- paceDrivers(fit)
+#' fit <- paceDrivers(fit, spe)
 #' names(topDrivers(fit))
 #' @rdname paceDrivers
 #' @export
-setMethod("paceDrivers", "PACEFit", function(object, pairs = NULL, ...) {
+setMethod("paceDrivers", "PACEFit", function(object, spe = NULL, pairs = NULL, ...) {
   if (nrow(object@neighbourSlopes) == 0L || length(object@varianceDecomposition) == 0L)
     stop("Run paceShrink() and paceDecompose() before paceDrivers().", call. = FALSE)
-  args <- list(object@fit, object@neighbourSlopes,
+  if (!is.null(spe) && !methods::is(spe, "SpatialExperiment"))
+    stop("`spe` must be the SpatialExperiment that was fitted; pass pairs by ",
+         "name: paceDrivers(fit, spe, pairs = ...).", call. = FALSE)
+  fit_mu <- object@fit
+  if (is.null(fit_mu$mu)) {
+    if (is.null(spe))
+      stop("this fit was saved without its fitted means; pass the ",
+           "SpatialExperiment it was fitted on: paceDrivers(fit, spe).", call. = FALSE)
+    fit_mu$mu <- .pace_mu_parts(object, spe)$mu
+  }
+  args <- list(fit_mu, object@neighbourSlopes,
                object@varianceDecomposition$blocks, object@cellTypes, pairs = pairs)
   ## condition cohorts score the responder interaction; pass the term and 0/1 indicator.
   if (!is.null(object@params$condition_col)) {
@@ -298,7 +315,7 @@ setMethod("paceFit", "SpatialExperiment", function(object, ..., pairs = NULL) {
   fit <- paceModel(object, ...)
   fit <- paceShrink(fit)
   fit <- paceDecompose(fit, object)
-  paceDrivers(fit, pairs = pairs)
+  paceDrivers(fit, object, pairs = pairs)
 })
 
 ## ===========================================================================

@@ -72,3 +72,27 @@ test_that("contamination = none rebuilds no spillover", {
 test_that("a mismatched spe is refused", {
   expect_error(PACE:::.pace_mu_parts(fit, spe[, 1:100]), "cells but the fit has")
 })
+
+test_that("the packaged fit re-scores to exactly its stored driver tables", {
+  # The driver scores read the fitted means too. Without a rebuild a stripped
+  # fit returned an empty list behind a warning.
+  skip_if_not(is.null(fit@fit$mu), "packaged fit unexpectedly retains mu")
+  # a failure inside the scoring still surfaces as a warning and an empty list
+  expect_no_warning(redone <- paceDrivers(fit, spe)@topDrivers)
+  expect_gt(length(fit@topDrivers), 0)
+  expect_gt(sum(vapply(redone, function(d) nrow(d$scores), integer(1))), 0)
+  expect_identical(names(redone), names(fit@topDrivers))
+  for (k in names(fit@topDrivers)) {
+    # not bit-for-bit: the rebuild's BLAS products differ in the last bits
+    # across platforms
+    expect_equal(redone[[k]]$scores, fit@topDrivers[[k]]$scores, tolerance = 1e-10)
+    expect_identical(redone[[k]]$status, fit@topDrivers[[k]]$status)
+  }
+})
+
+test_that("a stripped fit without spe is refused, not scored empty", {
+  skip_if_not(is.null(fit@fit$mu), "packaged fit unexpectedly retains mu")
+  expect_error(paceDrivers(fit), "pass the SpatialExperiment")
+  # pairs given positionally used to land in `spe`
+  expect_error(paceDrivers(fit, list(c("Macrophage", "Tumour"))), "pass pairs by name")
+})
