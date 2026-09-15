@@ -15,7 +15,9 @@ test_that("the packaged fit re-decomposes to exactly its stored table", {
 
   num <- vapply(stored, is.numeric, logical(1))
   expect_identical(dim(redone), dim(stored))
-  expect_equal(as.matrix(redone[num]), as.matrix(stored[num]), tolerance = 0)
+  # not bit-for-bit: the rebuild's BLAS products differ in the last bits across
+  # platforms
+  expect_equal(as.matrix(redone[num]), as.matrix(stored[num]), tolerance = 1e-10)
 })
 
 test_that("the spillover block survives the rebuild", {
