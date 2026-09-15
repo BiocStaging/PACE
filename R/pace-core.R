@@ -471,6 +471,8 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   if (is.null(eps)) eps <- 3 * h_bio
   use_etech <- contamination == "percell_hc"   ## E^tech ambient drives spillover
   has_cond  <- !is.null(condition_col)
+  if (image_re == "condition_slopes" && !has_cond)
+    stop("image_re = \"condition_slopes\" needs a `condition_col`.", call. = FALSE)
 
   ## ---- 1. working frame: raw labels -> factors, library size ----
   df <- as.data.frame(df)
@@ -530,12 +532,25 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   ## Uses standardised kernel columns <type>_imgz; condition_slopes adds the
   ## condition interaction (the PAT_DZ design).
   if (image_re != "none") {
-    imgz <- paste0(types, "_imgz")
-    for (tc in types) df[[paste0(tc, "_imgz")]] <- as.numeric(scale(df[[tc]]))
+    ## A kernel column that is constant over all cells (e.g. zeroed for every
+    ## focal by the sparse-pair drop) has zero SD: scale() returns NaN for every
+    ## cell and model.matrix() then drops all rows. It carries no slope to
+    ## estimate, so it is left out of the image-slope terms.
+    varying <- vapply(types, function(tc) {
+      col_sd <- stats::sd(df[[tc]])
+      is.finite(col_sd) && col_sd > 0
+    }, logical(1))
+    if (image_re != "intercept" && any(!varying) && verbose)
+      message("    image_re: no image slope for constant kernel column(s) ",
+              paste(types[!varying], collapse = ", "))
+    ## sprintf(), not paste0(): paste0() turns an empty input into "_imgz"
+    imgz <- sprintf("%s_imgz", types[varying])
+    for (tc in types[varying]) df[[paste0(tc, "_imgz")]] <- as.numeric(scale(df[[tc]]))
     img_rhs <- switch(image_re,
       intercept        = "1",
       slopes           = paste(c("1", imgz), collapse = " + "),
-      condition_slopes = paste(c("1", imgz, paste0(condition_col, ":", imgz)), collapse = " + "))
+      condition_slopes = paste(c("1", imgz, sprintf("%s:%s", condition_col, imgz)),
+                               collapse = " + "))
     re_specs <- c(re_specs, list(list(
       group_col = "imageID",
       formula   = stats::as.formula(paste0("~ ", img_rhs)))))
