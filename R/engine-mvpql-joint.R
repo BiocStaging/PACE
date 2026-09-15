@@ -513,6 +513,15 @@ fit_pace_mvpql_joint_multi <- function(Y, X_fixed, df, re_specs,
   contam_frac_out       <- if (additive_active)
                              rowSums(mu_spill) / pmax(rowSums(mu), 1e-9) else NULL
 
+  ## Per-cell-type statistics read by paceDecompose() and paceDrivers(), from the
+  ## dense matrices this solver already holds.
+  ct_block <- which(vapply(re$blocks, `[[`, character(1), "group_col") == "celltype")
+  ct_levels <- if (length(ct_block) == 1L) re$blocks[[ct_block]]$group_levels
+               else sort(unique(as.character(df$celltype)))
+  stats <- .pace_statistics_from_matrices(mu, technical_offset_mat,
+                                          as.character(df$celltype), ct_levels,
+                                          gene_names = colnames(Y))
+
   list(B = B, U = U, se_B = se_B, se_U = se_U,
        alpha          = alpha,
        tau_blocks     = tau_blocks,
@@ -532,5 +541,7 @@ fit_pace_mvpql_joint_multi <- function(Y, X_fixed, df, re_specs,
        mu_spill               = mu_spill_out,
        mu_bio                 = mu_bio_out,
        contam_frac            = contam_frac_out,
+       mu_celltype_means      = stats$mu_mean,
+       stats                  = stats,
        n_iter         = it, converged = converged, history = hist)
 }

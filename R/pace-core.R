@@ -22,10 +22,10 @@
 ##                             celltype_col = "cellType",   # which columns hold the
 ##                             image_col    = "sample")     #   cell type + sample id
 ##   shr <- pace_shrink(res$fit, res$types)
-##   dec <- pace_decompose(res$fit, res$df, res$Y, res$types, res$X_fixed)
-##   ct <- as.character(res$df$celltype)
-##   mu_means <- rowsum(res$fit$mu, ct) / as.vector(table(ct))   # rows named by cell type
-##   drv <- pace_top_drivers(res$fit, shr, dec, res$types, mu_means)  # all focal x neighbour pairs
+##   dec <- pace_decompose(res$fit, res$df, res$Y, res$types, res$X_fixed,
+##                         stats = res$fit$stats)
+##   drv <- pace_top_drivers(res$fit, shr, dec, res$types,
+##                           res$fit$stats$mu_mean)   # all focal x neighbour pairs
 ## Cell types, coordinates and image grouping are READ FROM THE DATA; the method
 ## defaults reproduce the manuscript recipe. (The Bioconductor wrapper paceFit(spe)
 ## reads these from a SpatialExperiment's conventions, collapsing the call to one
@@ -391,6 +391,8 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
 
 ## ----------------------------------------------------------------------------
 ## Fitted means and the contamination log-offset, rebuilt rather than stored.
+## Used only for older, stripped fits that carry neither the n x G matrices nor
+## the per-cell-type statistics (.pace_statistics_by_rebuild(), pace-stats.R).
 ##
 ## mu is a deterministic function of what the fit already holds: on the log
 ## scale eta = X B + Z U has rank at most p + q, so B, U, X_fixed and re_meta$Z
@@ -407,71 +409,6 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
 ## edge correction would otherwise be handed a different field and would return
 ## plausible, wrong numbers.
 ## ----------------------------------------------------------------------------
-.pace_mu_parts <- function(object, spe) {
-  f <- object@fit
-  ## The two travel together: both solvers return them from the same pass, so
-  ## either both are present or neither is.
-  if (!is.null(f$mu) && !is.null(f$technical_offset_mat))
-    return(list(mu = f$mu, technical_offset_mat = f$technical_offset_mat))
-
-  inputs <- .pace_mu_inputs(object, spe)
-  inputs$Y <- as.matrix(inputs$Y)
-  block <- .pace_mu_block(object, seq_len(nrow(inputs$Y)), inputs)
-
-  ## contamination = "none" carries no ambient term: mu = mu_bio, no spillover.
-  if (is.null(block$mu_spill))
-    return(list(mu = block$mu_bio,
-                technical_offset_mat = matrix(0, nrow(block$mu_bio), ncol(block$mu_bio),
-                                              dimnames = dimnames(block$mu_bio))))
-
-  list(mu                   = pmax(block$mu_bio + block$mu_spill, 1e-6),
-       technical_offset_mat = log1p(block$mu_spill / block$mu_bio))
-}
-
-## Mean fitted mean of every gene within each cell type (cell types x genes),
-## computed chunk by chunk so the n x G `mu` is never held whole. The driver
-## scores need only these means, and at a million cells each n x G matrix runs
-## to gigabytes. A fit that stores `mu` is averaged directly.
-.pace_mu_means_by_celltype <- function(object, spe = NULL, chunk_size = 10000L) {
-  f <- object@fit
-  types <- object@cellTypes
-
-  ## the cell-type membership pace_top_drivers() uses: the intercept column
-  Z_intercepts <- f$re_meta$Z[, paste0(types, "::(Intercept)"), drop = FALSE]
-  cell_type <- max.col(as.matrix(Z_intercepts != 0), ties.method = "first")
-  cell_type[Matrix::rowSums(Z_intercepts != 0) == 0] <- NA_integer_
-  cell_type <- factor(types[cell_type], levels = types)
-  n_cells <- nrow(Z_intercepts)
-
-  sums <- NULL
-  add_block <- function(mu_block, rows) {
-    typed <- !is.na(cell_type[rows])
-    block_sums <- rowsum(mu_block[typed, , drop = FALSE], cell_type[rows][typed],
-                         reorder = TRUE)
-    full <- matrix(0, length(types), ncol(mu_block),
-                   dimnames = list(types, colnames(mu_block)))
-    full[rownames(block_sums), ] <- block_sums
-    if (is.null(sums)) full else sums + full
-  }
-
-  if (!is.null(f$mu)) {
-    sums <- add_block(as.matrix(f$mu), seq_len(n_cells))
-  } else {
-    if (is.null(spe))
-      stop("this fit was saved without its fitted means; pass the ",
-           "SpatialExperiment it was fitted on.", call. = FALSE)
-    inputs <- .pace_mu_inputs(object, spe)
-    for (start in seq(1L, n_cells, by = chunk_size)) {
-      rows <- start:min(start + chunk_size - 1L, n_cells)
-      block <- .pace_mu_block(object, rows, inputs)
-      mu_block <- if (is.null(block$mu_spill)) block$mu_bio
-                  else pmax(block$mu_bio + block$mu_spill, 1e-6)
-      sums <- add_block(mu_block, rows)
-    }
-  }
-  sums / as.vector(table(cell_type))
-}
-
 ## What rebuilding mu needs beyond the fit: the counts (cells x fitted genes,
 ## kept sparse if the assay is) and the ambient field, or NULL for a fit
 ## without contamination.
@@ -483,7 +420,7 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   if (ncol(counts) != nrow(df))
     stop("`spe` has ", ncol(counts), " cells but the fit has ", nrow(df),
          "; pass the same object used for paceModel().", call. = FALSE)
-  Y <- Matrix::t(counts[object@context$genes, , drop = FALSE])
+  Y <- .pace_as_dgc(Matrix::t(counts[object@context$genes, , drop = FALSE]))
 
   if (!identical(p$contamination, "percell_hc") || is.null(f$percell_bleed_rho))
     return(list(Y = Y, amb = NULL))
@@ -503,19 +440,28 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
 ## The two parts of the fitted mean for a block of cells (rows x genes):
 ## mu_bio, and mu_spill (NULL without contamination). The one place the
 ## rebuild formula lives, shared by the whole-matrix and chunked callers.
-.pace_mu_block <- function(object, rows, inputs) {
+## `rows` selects cells (NULL: all cells) and `gene_idx` selects genes (NULL: all
+## genes); a block is rows x genes. Each gene column is computed independently, so
+## any block split gives the same values.
+.pace_mu_block <- function(object, rows, inputs, gene_idx = NULL) {
   f  <- object@fit
   df <- object@context$df
+  if (is.null(rows)) rows <- seq_len(nrow(df))
+  if (is.null(gene_idx)) gene_idx <- seq_len(ncol(f$B))
+  all_rows <- length(rows) == nrow(df)
+  X_block <- if (all_rows) object@context$X_fixed else object@context$X_fixed[rows, , drop = FALSE]
+  Z_block <- if (all_rows) f$re_meta$Z else f$re_meta$Z[rows, , drop = FALSE]
 
   ## mu_bio = exp(eta + offset), offset = log library size (pace_fit_streaming).
-  eta    <- as.matrix(object@context$X_fixed[rows, , drop = FALSE] %*% f$B) +
-            as.matrix(f$re_meta$Z[rows, , drop = FALSE] %*% f$U)
+  eta    <- as.matrix(X_block %*% f$B[, gene_idx, drop = FALSE]) +
+            as.matrix(Z_block %*% f$U[, gene_idx, drop = FALSE])
   mu_bio <- pmax(exp(eta + log(df$nCount[rows])), 1e-6)
   if (is.null(inputs$amb))
     return(list(mu_bio = mu_bio, mu_spill = NULL))
 
   ## Same expressions and floors as the solver's final pass.
-  ambient  <- as.matrix(inputs$amb$W[rows, , drop = FALSE] %*% inputs$Y)
+  W_block  <- if (all_rows) inputs$amb$W else inputs$amb$W[rows, , drop = FALSE]
+  ambient  <- as.matrix(W_block %*% inputs$Y[, gene_idx, drop = FALSE])
   mu_spill <- pmax(ambient * f$percell_bleed_rho[rows], 0)
   list(mu_bio = mu_bio, mu_spill = mu_spill)
 }
@@ -733,11 +679,13 @@ pace_shrink <- function(fit, types, resp_term = NULL, ...) {
 
 ## ----------------------------------------------------------------------------
 ## Reporting: per-gene variance decomposition with the 4-block percentage view.
+## `stats` are the per-cell-type statistics (.pace_fit_statistics(), pace-stats.R);
+## `Y` is the sparse cells x genes counts, read only for per-type count means.
 ## ----------------------------------------------------------------------------
-pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL) {
-  dec <- mvpql_variance_decomposition_multi(
-    fit = fit, df = df, Y = Y, vars = types,
-    X_fixed = X_fixed, resp_term = resp_term, focal_levels = types)
+pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL, stats, threads = 1L) {
+  dec <- mvpql_variance_decomposition_stats(
+    fit = fit, stats = stats, df = df, Y = Y, vars = types,
+    X_fixed = X_fixed, resp_term = resp_term, focal_levels = types, threads = threads)
   g5 <- dec$gene_focal_5block
   total4 <- with(g5, celltype_offset_sq + V_state_baseline + V_state_responder +
                      V_spill + V_disp)
@@ -764,7 +712,7 @@ pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL) {
 ## `pairs` is a list of c(focal, neighbour); resp_term = NULL gives term == nb.
 ## ----------------------------------------------------------------------------
 ## `mu_means` is the cell types x genes matrix of mean fitted means
-## (.pace_mu_means_by_celltype()), so the n x G `mu` need not be held.
+## (the `mu_mean` statistic, .pace_fit_statistics()), so the n x G `mu` need not be held.
 pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = NULL,
                              resp_term = NULL, resp_dummy = NULL) {
   ## default: every ordered focal != neighbour pair (a chosen subset is only a

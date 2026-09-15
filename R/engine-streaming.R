@@ -746,6 +746,12 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## available without retaining the n x G matrices (return_mu = FALSE).
   contam_spill_sum <- numeric(n)
   contam_tot_sum   <- numeric(n)
+  ## Per-(cell type, gene) variance of the technical offset over the type's cells,
+  ## exactly as the decomposition computes it from the full matrix
+  ## (stats::var(technical_offset_mat[cells, g], na.rm = TRUE)): every chunk holds
+  ## all cells for its genes, so the per-type columns are complete here.
+  toff_var <- matrix(NA_real_, length(ct_levels), g_n, dimnames = list(ct_levels, colnames(Y)))
+  toff_any_nonzero <- FALSE
 
   chk_starts <- seq.int(1L, g_n, by = max(1L, as.integer(chunk_size)))
   for (cs in chk_starts) {
@@ -760,9 +766,12 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     toff_chk   <- log1p(mu_spill_chk / mu_bio_chk)
     for (ci in seq_along(ct_levels)) {
       rr <- cells_by_ct[[ci]]
-      if (length(rr))
+      if (length(rr)) {
         mu_celltype_sum[ci, gene_idx_chk] <- colSums(mu_chk[rr, , drop = FALSE])
+        toff_var[ci, gene_idx_chk] <- apply(toff_chk[rr, , drop = FALSE], 2, stats::var, na.rm = TRUE)
+      }
     }
+    toff_any_nonzero <- toff_any_nonzero || any(toff_chk != 0, na.rm = TRUE)
     mu_global_sum[gene_idx_chk] <- colSums(mu_chk)
     contam_spill_sum <- contam_spill_sum + rowSums(mu_spill_chk)
     contam_tot_sum   <- contam_tot_sum   + rowSums(mu_chk)
@@ -796,5 +805,8 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
        bleed_re_group_levels = NULL, bleed_re_cell_group = NULL,
        percell_bleed_rho = add_rho,
        contam_frac       = contam_frac,
+       ## per-cell-type statistics read by paceDecompose() and paceDrivers()
+       stats = .pace_statistics_record(ct_levels, n_by_ct, mu_celltype_means,
+                                       toff_var, toff_any_nonzero),
        n_iter = it, converged = converged, history = hist)
 }
