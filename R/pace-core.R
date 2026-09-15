@@ -85,8 +85,10 @@
 ## their own sparse coercion when they have one, and through as.matrix() otherwise.
 .pace_as_dgc <- function(Y) {
   if (!methods::is(Y, "dgCMatrix")) {
+    ## only densify when no sparse coercion exists; errors from an existing
+    ## coercion (including memory errors) are raised, not hidden
     if (!methods::is(Y, "Matrix") && !is.matrix(Y))
-      Y <- tryCatch(methods::as(Y, "dgCMatrix"), error = function(e) as.matrix(Y))
+      Y <- if (methods::canCoerce(Y, "dgCMatrix")) methods::as(Y, "dgCMatrix") else as.matrix(Y)
     if (!methods::is(Y, "dgCMatrix"))
       Y <- methods::as(methods::as(methods::as(Y, "dMatrix"), "generalMatrix"), "CsparseMatrix")
   }
@@ -293,9 +295,10 @@ pace_anchors <- function(coords, Y, celltype, image, types,
 ## Streaming identity: W %*% Y[, g] == dense E_tech[, g]. Validated on a few
 ## evenly spaced genes before the fit when `validate = TRUE`.
 ## W and the edge fractions are built in C++ without storing neighbour pairs. The
-## validation is independent of that code: neighbour pairs come from
-## dbscan::frNN, and the edge fractions of up to 1000 checked cells are recomputed
-## with the original R quadrature (.pace_edge_fraction_reference()).
+## validation has two parts: every row is compared with E_tech rebuilt from
+## dbscan::frNN pairs (using the compiled edge fractions), and up to 1000 cells are
+## also compared with edge fractions recomputed by the original R quadrature
+## (.pace_edge_fraction_reference()), so the edge correction is checked too.
 ## ----------------------------------------------------------------------------
 pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
                                edge_correct = TRUE, validate = TRUE, verbose = TRUE,
@@ -303,6 +306,8 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   .pace_check_positive(h_tech, "h_tech")
   n <- nrow(Y)
   rad <- 3 * h_tech
+  if (!is.finite(rad))
+    stop("`h_tech` is too large: the ambient radius 3 * h_tech must be finite.", call. = FALSE)
   coords <- .pace_coordinate_matrix(coords)
   ct_all <- as.character(celltype)
   if (anyNA(ct_all))
@@ -345,10 +350,16 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
       raw_rows[[length(raw_rows) + 1L]] <- as.integer(rownames(sums))
       raw_sums[[length(raw_sums) + 1L]] <- sums
     }
-    target <- unlist(raw_rows, use.names = FALSE)
-    E_raw <- do.call(rbind, raw_sums)
-    ## cells without heterotypic neighbours must have empty W rows
-    max_id <- if (length(target) < n) max(abs(a_spot[-target, , drop = FALSE])) else 0
+    target <- as.integer(unlist(raw_rows, use.names = FALSE))
+    ## every row: frNN-based E_tech with the compiled edge fractions; cells without
+    ## a heterotypic neighbour (all cells, when there is none) must have empty rows
+    E_raw <- matrix(0, n, length(spot_g))
+    E_all <- matrix(0, n, length(spot_g))
+    if (length(target)) {
+      E_raw[target, ] <- do.call(rbind, raw_sums)
+      E_all[target, ] <- E_raw[target, , drop = FALSE] / af[target]
+    }
+    max_id <- if (n) max(abs(a_spot - E_all)) else 0
     if (length(target)) {
       ## up to 1000 evenly spaced cells, edge fractions recomputed independently
       pick <- unique(round(seq(1, length(target), length.out = min(1000L, length(target)))))
@@ -365,7 +376,7 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
             min(coords[rows, 2]), max(coords[rows, 2]))
         }
       }
-      E_checked <- E_raw[pick, , drop = FALSE] / af_reference
+      E_checked <- E_raw[checked, , drop = FALSE] / af_reference
       max_id <- max(max_id, abs(a_spot[checked, , drop = FALSE] - E_checked))
     }
     if (verbose)
@@ -544,6 +555,8 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   .pace_check_positive(h_bio, "h_bio")
   .pace_check_positive(h_tech, "h_tech")
   .pace_check_positive(eps, "eps")
+  if (!is.finite(3 * h_tech))
+    stop("`h_tech` is too large: the ambient radius 3 * h_tech must be finite.", call. = FALSE)
   use_etech <- contamination == "percell_hc"   ## E^tech ambient drives spillover
   has_cond  <- !is.null(condition_col)
   if (image_re == "condition_slopes" && !has_cond)

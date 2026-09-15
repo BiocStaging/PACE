@@ -11,8 +11,8 @@
 
   ## counts are genes x cells in an SPE; PACE wants cells x genes.
   Y <- t(as.matrix(SummarizedExperiment::assay(object, assay_name)))
-  coords <- SpatialExperiment::spatialCoords(object)
-  if (ncol(coords) < 2L) stop("spatialCoords must have two columns.", call. = FALSE)
+  ## exactly two finite coordinate columns, refused (not dropped) otherwise
+  coords <- .pace_coordinate_matrix(SpatialExperiment::spatialCoords(object))
   df <- cd
   df[["x"]] <- coords[, 1]
   df[["y"]] <- coords[, 2]
