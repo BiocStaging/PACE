@@ -263,33 +263,82 @@ test_that("neighbour sets and distances equal frNN on boundary layouts", {
   expect_true(compare_sets(duplicates, 1))
 })
 
+# Calls that hung or over-allocated before input validation (zero, denormal or
+# huge radii) run in a separate Rscript process with a timeout, so a regression
+# fails the test instead of hanging the whole suite. Base system2() is used, not
+# callr: processx's SIGCHLD handler would reap the forked workers of later fits.
+run_isolated <- function(fun, timeout = 60) {
+  script <- tempfile(fileext = ".R")
+  result_file <- tempfile(fileext = ".rds")
+  on.exit(unlink(c(script, result_file)), add = TRUE)
+  writeLines(c(paste0("isolated <- ", paste(deparse(fun), collapse = "\n")),
+               sprintf("saveRDS(isolated(), %s)", deparse(result_file))), script)
+  status <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"), shQuote(script),
+                                     stdout = FALSE, stderr = FALSE, timeout = timeout,
+                                     env = paste0("R_LIBS=", shQuote(paste(.libPaths(), collapse = ":")))))
+  if (!file.exists(result_file))
+    stop("isolated R process did not finish (exit status ", status, "; 124 means timeout)")
+  readRDS(result_file)
+}
+
 test_that("invalid radii and bandwidths are refused quickly instead of hanging", {
   skip_if_not_installed("SpatialExperiment")
-  spe <- bc_crop(0.1)
-  coords <- SpatialExperiment::spatialCoords(spe)
-  ct <- spe$cellType
-  types <- sort(unique(ct))
-  Y <- PACE:::.pace_as_dgc(t(as.matrix(SummarizedExperiment::assay(spe, "counts"))))
-  image <- factor(rep("all", nrow(coords)))
-  setTimeLimit(elapsed = 30, transient = TRUE)
-  on.exit(setTimeLimit(elapsed = Inf), add = TRUE)
-  for (bad in list(0, -5, NaN, Inf, NA_real_)) {
-    expect_error(PACE:::pace_neighbour_kernel(coords, ct, types, 30, bad, 90), "h_tech")
-    expect_error(PACE:::pace_neighbour_kernel(coords, ct, types, bad, 5, 90), "h_bio")
-    expect_error(PACE:::pace_neighbour_kernel(coords, ct, types, 30, 5, bad), "eps")
-    expect_error(PACE:::pace_ambient_field(coords, Y, ct, image, types, bad, verbose = FALSE), "h_tech")
-    expect_error(PACE:::pace_area_fraction(coords, bad), "`r`")
-    # the compiled core refuses them too, independently of the R checks
-    expect_error(PACE:::pace_neighbour_counts_cpp(coords + 0, rep(-1L, nrow(coords)), FALSE, bad, 1L),
-                 "eps")
-    expect_error(PACE:::pace_neighbour_kernels_cpp(coords + 0, rep(0L, nrow(coords)), 1L,
-                                                   rep(-1L, nrow(coords)), FALSE, 30, bad, 90, 1L),
-                 "h_tech")
+  messages <- run_isolated(function() {
+    spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))
+    x <- SpatialExperiment::spatialCoords(spe)[, 1]
+    spe <- spe[, x <= stats::quantile(x, 0.1)]
+    coords <- SpatialExperiment::spatialCoords(spe)
+    ct <- spe$cellType
+    types <- sort(unique(ct))
+    Y <- PACE:::.pace_as_dgc(t(as.matrix(SummarizedExperiment::assay(spe, "counts"))))
+    image <- factor(rep("all", nrow(coords)))
+    n <- nrow(coords)
+    caught <- function(expr) tryCatch({ force(expr); "NO ERROR" }, error = function(e) conditionMessage(e))
+    out <- list()
+    for (bad in list(0, -5, NaN, Inf, NA_real_)) {
+      key <- format(bad)
+      out[[paste("kernel h_tech", key)]] <- caught(PACE:::pace_neighbour_kernel(coords, ct, types, 30, bad, 90))
+      out[[paste("kernel h_bio", key)]] <- caught(PACE:::pace_neighbour_kernel(coords, ct, types, bad, 5, 90))
+      out[[paste("kernel eps", key)]] <- caught(PACE:::pace_neighbour_kernel(coords, ct, types, 30, 5, bad))
+      out[[paste("ambient h_tech", key)]] <- caught(PACE:::pace_ambient_field(coords, Y, ct, image, types, bad,
+                                                                             verbose = FALSE))
+      out[[paste("area r", key)]] <- caught(PACE:::pace_area_fraction(coords, bad))
+      out[[paste("core counts eps", key)]] <- caught(PACE:::pace_neighbour_counts_cpp(coords + 0, rep(-1L, n),
+                                                                                     FALSE, bad, 1L))
+      out[[paste("core kernels h_tech", key)]] <- caught(PACE:::pace_neighbour_kernels_cpp(
+        coords + 0, rep(0L, n), 1L, rep(-1L, n), FALSE, 30, bad, 90, 1L))
+      out[[paste("core ambient h_tech", key)]] <- caught(PACE:::pace_ambient_field_cpp(
+        coords + 0, rep(0L, n), rep(0L, n), 1L, bad, TRUE, 1, 0, 1L))
+    }
+    out[["paceModel h_tech 0"]] <- caught(PACE::paceModel(spe, celltype_col = "cellType", h_tech = 0,
+                                                         n_iter = 1L, threads = 1L, verbose = FALSE))
+    out[["ambientField h_tech 0"]] <- caught(PACE::ambientField(spe, "cellType", h_tech = 0, verbose = FALSE))
+    # a finite h_tech whose ambient radius 3 * h_tech overflows
+    out[["ambient h_tech huge"]] <- caught(PACE:::pace_ambient_field(coords, Y, ct, image, types, 1e308,
+                                                                    verbose = FALSE))
+    out[["core ambient h_tech huge"]] <- caught(PACE:::pace_ambient_field_cpp(
+      coords + 0, rep(0L, n), rep(0L, n), 1L, 1e308, TRUE, 1, 0, 1L))
+    out[["paceModel h_tech huge"]] <- caught(PACE::paceModel(spe, celltype_col = "cellType", h_tech = 1e308,
+                                                            n_iter = 1L, threads = 1L, verbose = FALSE))
+    out
+  })
+  for (name in names(messages)) {
+    parameter <- sub("^.* (h_tech|h_bio|eps|r) .*$", "\\1", name)
+    expect_false(identical(messages[[name]], "NO ERROR"), info = name)
+    expect_match(messages[[name]], if (grepl("huge", name)) "3 \\* h_tech" else parameter, info = name)
   }
-  expect_error(paceModel(spe, celltype_col = "cellType", h_tech = 0, n_iter = 1L,
-                         threads = 1L, verbose = FALSE),
-               "h_tech")
-  expect_error(ambientField(spe, "cellType", h_tech = 0, verbose = FALSE), "h_tech")
+})
+
+test_that("a denormal radius over a huge extent stays exact without a huge grid", {
+  skip_if_not_installed("dbscan")
+  result <- run_isolated(function() {
+    coords <- rbind(c(0, 0), c(0, 0), c(1e20, 3e20), c(1e20, 3e20), c(5, 5), c(-3e20, 2))
+    list(counts = PACE:::pace_neighbour_counts_cpp(coords, rep(-1L, nrow(coords)), FALSE, 1e-320, 2L),
+         reference = lengths(dbscan::frNN(coords, eps = 1e-320)$id),
+         small_extent = PACE:::pace_neighbour_counts_cpp(coords[c(1, 2, 5), ], rep(-1L, 3), FALSE, 1e-320, 1L))
+  })
+  expect_identical(result$counts, result$reference)
+  expect_identical(result$small_extent, c(1L, 1L, 0L))
 })
 
 test_that("non-finite coordinates, a third coordinate column and non-finite counts are refused", {
@@ -329,4 +378,50 @@ test_that("DelayedArray assays work in anchorGenes() and ambientField()", {
                    suppressMessages(suppressWarnings(anchorGenes(fit, spe))))
   expect_identical(ambientField(delayed, "cellType", verbose = FALSE),
                    ambientField(spe, "cellType", verbose = FALSE))
+})
+
+test_that("paceModel refuses spatial coordinates with a third column", {
+  skip_if_not_installed("SpatialExperiment")
+  spe <- bc_crop(0.1)
+  coords <- SpatialExperiment::spatialCoords(spe)
+  spe3 <- SpatialExperiment::SpatialExperiment(
+    assays = list(counts = SummarizedExperiment::assay(spe, "counts")),
+    colData = SummarizedExperiment::colData(spe),
+    spatialCoords = cbind(coords, z = 1))
+  expect_error(paceModel(spe3, celltype_col = "cellType", n_iter = 1L, threads = 1L, verbose = FALSE),
+               "exactly two columns")
+})
+
+test_that("the W identity check passes when no cell has a heterotypic neighbour", {
+  skip_if_not_installed("SpatialExperiment")
+  spe <- bc_crop(0.25)
+  coords <- SpatialExperiment::spatialCoords(spe)
+  Y <- t(as.matrix(SummarizedExperiment::assay(spe, "counts")))
+  ct <- as.character(spe$cellType)
+  types <- sort(unique(ct))
+  n <- nrow(Y)
+  image_all <- factor(rep("all", n))
+  # The expected field is an n x n W with no entries. (The pure-R reference cannot
+  # build it: sparseMatrix() fails on the empty triplet list.)
+  empty_field <- function(image) {
+    list(W = Matrix::sparseMatrix(i = integer(0), j = integer(0), x = numeric(0), dims = c(n, n)),
+         image_idx = as.integer(image), n_images = nlevels(image))
+  }
+
+  # a technical radius so small that no two cells are within 3 * h_tech
+  tiny <- ambientField(spe, "cellType", h_tech = 0.01, verbose = FALSE)
+  expect_identical(tiny, empty_field(image_all))
+  expect_identical(ambientField(spe, "cellType", h_tech = 0.1, verbose = FALSE), empty_field(image_all))
+
+  # a single cell type: every neighbour is homotypic
+  one_type <- rep("Tumour", n)
+  single <- PACE:::pace_ambient_field(coords, PACE:::.pace_as_dgc(Y), one_type, image_all, "Tumour", 5,
+                                      verbose = FALSE)
+  expect_identical(single, empty_field(image_all))
+
+  # one cell per image: no image has two cells
+  per_cell <- factor(seq_len(n))
+  isolated <- PACE:::pace_ambient_field(coords, PACE:::.pace_as_dgc(Y), ct, per_cell, types, 5,
+                                        verbose = FALSE)
+  expect_identical(isolated, empty_field(per_cell))
 })
