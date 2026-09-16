@@ -80,7 +80,13 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
                                   resp_term = NULL,
                                   min_significant = 10,
                                   data_driven = TRUE,
-                                  null_correlation = TRUE) {
+                                  null_correlation = TRUE,
+                                   ## How many R processes shrink the neighbour
+                                   ## slices at once. 1 (default) keeps the
+                                   ## serial order, which is what the fixtures
+                                   ## were made with; see .pace_shrink_slices()
+                                   ## for what changes above 1.
+                                   shrink_threads = 1L) {
   ## data_driven=FALSE -> canonical covariances only (skip the slow cov_pca/cov_ed
   ## extreme-deconvolution step). Much faster when there are many neighbour terms
   ## (e.g. 16-type fits); shrinkage is slightly less adaptive but driver rankings
@@ -156,9 +162,11 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
               " genes dropped to keep the gene set common across neighbours")
   }
 
-  ## Pass 2: shrink each slice over the common genes.
-  out <- list()
-  for (nb in names(slices)) {
+  ## Pass 2: shrink each slice over the common genes. The slices are
+  ## independent -- one mash fit each -- so `shrink_threads` can run them in
+  ## separate R processes. mashr is R code, so processes are the only way to
+  ## overlap them; the fit itself needs none of this and starts no workers.
+  shrink_one <- function(nb) {
     target_term <- slices[[nb]]$target_term
     Bhat <- slices[[nb]]$Bhat[common_genes, , drop = FALSE]
     Shat <- slices[[nb]]$Shat[common_genes, , drop = FALSE]
@@ -168,7 +176,7 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
     if (nrow(Bhat) < 5) {
       message("  [mashr] term '", target_term,
               "' has <5 genes common to every neighbour, skipping")
-      next
+      return(NULL)
     }
 
     ## The focal cell types are conditions estimated in the SAME per-gene
@@ -206,13 +214,13 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
                  NULL
                })
     })
-    if (is.null(m)) next
+    if (is.null(m)) return(NULL)
 
     pm   <- get_pm(m)
     psd  <- get_psd(m)
     lfsr <- get_lfsr(m)
 
-    out[[nb]] <- tibble::tibble(
+    result <- tibble::tibble(
       gene = rownames(pm)[row(pm)],
       focal = colnames(pm)[col(pm)],
       neighbour = nb,
@@ -226,10 +234,54 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
     fsr <- expected_false_sign(as.numeric(lfsr))
     message(sprintf("  [mashr] %s: %d genes shrunk; gene-focal calls (lfsr<0.05) = %d, expected false sign = %.1f",
                     target_term, nrow(Bhat), fsr$n_calls, fsr$expected_false_sign))
+    result
   }
+
+  out <- .pace_shrink_slices(names(slices), shrink_one, shrink_threads)
+  out <- out[!vapply(out, is.null, logical(1))]
 
   if (length(out) == 0) return(.empty_shrunken_long())
   dplyr::bind_rows(out)
+}
+
+
+# Run one function over the neighbour slices, in this process or in several.
+#
+# The slices are independent, and about 90% of the shrinkage runs inside them,
+# so this is where the wall time is. Processes, not threads: mashr is R code.
+# BiocParallel's MulticoreParam forks, which is cheap here (the slices are
+# already built, and copy-on-write shares them); Windows has no fork, so it
+# falls back to running them in order.
+#
+# RNG: mash() draws from the stream itself, and cov_pca() draws again for its
+# irlba starting vectors, so a serial run consumes the stream slice by slice in
+# an order no parallel run can reproduce -- with or without `data_driven`. Each
+# worker therefore seeds itself with its own slice index, which makes the
+# parallel result reproducible run to run but NOT equal to the serial one. The
+# serial default is what the fixtures were made with, and the measured
+# difference is in the design note.
+.pace_shrink_slices <- function(names_of_slices, shrink_one, shrink_threads) {
+  threads <- .pace_thread_count(shrink_threads)
+  if (threads == 1L || length(names_of_slices) < 2L) {
+    return(stats::setNames(lapply(names_of_slices, shrink_one), names_of_slices))
+  }
+  if (.Platform$OS.type == "windows") {
+    message("  [mashr] shrink_threads > 1 needs a forking platform; running the slices in order")
+    return(stats::setNames(lapply(names_of_slices, shrink_one), names_of_slices))
+  }
+  seeded <- function(index) {
+    set.seed(index)
+    shrink_one(names_of_slices[index])
+  }
+  ## Collect once here rather than once inside every worker: the children
+  ## inherit this heap, and its garbage with it.
+  invisible(gc(full = TRUE, verbose = FALSE))
+  ## One task per slice, so a slow slice does not hold a worker's whole share:
+  ## the slices differ several-fold in cost.
+  param <- BiocParallel::MulticoreParam(workers = min(threads, length(names_of_slices)),
+                                        tasks = length(names_of_slices))
+  stats::setNames(BiocParallel::bplapply(seq_along(names_of_slices), seeded, BPPARAM = param),
+                  names_of_slices)
 }
 
 .empty_shrunken_long <- function() {

@@ -183,7 +183,17 @@ setMethod(
 #' @param ... Further arguments passed to the shrinkage step, notably
 #'   `null_correlation` (default `TRUE`: estimate the correlation between focal
 #'   cell types under the null and pass it to mash as `V`; `FALSE` treats them
-#'   as independent) and `data_driven`.
+#'   as independent), `data_driven`, and `shrink_threads`.
+#'
+#'   `shrink_threads` (default 1) is how many R processes shrink the neighbour
+#'   slices at once. The slices are independent and carry about 90% of the work,
+#'   so this is where the time goes. It is 1 by default because with
+#'   `data_driven = TRUE` the parallel path cannot reproduce the serial one:
+#'   `cov_pca()` draws its starting vectors from the RNG, and a serial run
+#'   consumes that stream slice by slice. Above 1 each slice is seeded with its
+#'   own index, so the parallel result is reproducible run to run but differs
+#'   from the serial one. With `data_driven = FALSE` nothing draws from the
+#'   stream and the two are identical.
 #' @return The `PACEFit` with the shrunken neighbour slopes added.
 #' @examples
 #' fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))

@@ -15,7 +15,17 @@ paceShrink(object, ...)
 \item{...}{Further arguments passed to the shrinkage step, notably
 \code{null_correlation} (default \code{TRUE}: estimate the correlation between focal
 cell types under the null and pass it to mash as \code{V}; \code{FALSE} treats them
-as independent) and \code{data_driven}.}
+as independent), \code{data_driven}, and \code{shrink_threads}.
+
+\code{shrink_threads} (default 1) is how many R processes shrink the neighbour
+slices at once. The slices are independent and carry about 90\% of the work,
+so this is where the time goes. It is 1 by default because with
+\code{data_driven = TRUE} the parallel path cannot reproduce the serial one:
+\code{cov_pca()} draws its starting vectors from the RNG, and a serial run
+consumes that stream slice by slice. Above 1 each slice is seeded with its
+own index, so the parallel result is reproducible run to run but differs
+from the serial one. With \code{data_driven = FALSE} nothing draws from the
+stream and the two are identical.}
 }
 \value{
 The \code{PACEFit} with the shrunken neighbour slopes added.
