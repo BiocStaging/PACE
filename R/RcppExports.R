@@ -37,6 +37,58 @@ pace_single_frame_statistics_cpp <- function(counts, n_count, group, n_groups, n
     .Call(`_PACE_pace_single_frame_statistics_cpp`, counts, n_count, group, n_groups, n_threads)
 }
 
+pace_dense_group_moments_cpp <- function(values, n, p, group, n_groups, want_mean, want_variance, n_threads) {
+    .Call(`_PACE_pace_dense_group_moments_cpp`, values, n, p, group, n_groups, want_mean, want_variance, n_threads)
+}
+
+pace_final_pass_statistics_cpp <- function(eta, offset, ambient, rho, group, n_groups, return_matrices) {
+    .Call(`_PACE_pace_final_pass_statistics_cpp`, eta, offset, ambient, rho, group, n_groups, return_matrices)
+}
+
+pace_variance_decomposition_cpp <- function(ct_means, group_size, focal_group, n_focal, u, se_u, slope_rows, kernel_cov, responder_rows, responder_keep, responder_cov, intercept_rows, toff_var, spill_cov, beta_spill, mu_mean, alpha, nb1, n_threads) {
+    .Call(`_PACE_pace_variance_decomposition_cpp`, ct_means, group_size, focal_group, n_focal, u, se_u, slope_rows, kernel_cov, responder_rows, responder_keep, responder_cov, intercept_rows, toff_var, spill_cov, beta_spill, mu_mean, alpha, nb1, n_threads)
+}
+
+pace_decomposition_aggregates_cpp <- function(focal_code, n_focals, pct, components, spec, is_contaminated, weight_by_spec_sq) {
+    .Call(`_PACE_pace_decomposition_aggregates_cpp`, focal_code, n_focals, pct, components, spec, is_contaminated, weight_by_spec_sq)
+}
+
+pace_four_block_shares_cpp <- function(celltype_offset_sq, v_state_baseline, v_state_responder, v_spill, v_disp) {
+    .Call(`_PACE_pace_four_block_shares_cpp`, celltype_offset_sq, v_state_baseline, v_state_responder, v_spill, v_disp)
+}
+
+pace_single_frame_shares_cpp <- function(focal_mean, within_ss, global_mean, group_size, v_state, v_responder, v_spill, v_disp, n_threads) {
+    .Call(`_PACE_pace_single_frame_shares_cpp`, focal_mean, within_ss, global_mean, group_size, v_state, v_responder, v_spill, v_disp, n_threads)
+}
+
+pace_driver_scores_cpp <- function(estimate_shrunk, spec, focal_mean, mu_bar, alpha, u_raw, var_n, var_rn, has_responder) {
+    .Call(`_PACE_pace_driver_scores_cpp`, estimate_shrunk, spec, focal_mean, mu_bar, alpha, u_raw, var_n, var_rn, has_responder)
+}
+
+pace_subset_covariance_cpp <- function(matrix, rows, cols, scale) {
+    .Call(`_PACE_pace_subset_covariance_cpp`, matrix, rows, cols, scale)
+}
+
+pace_subset_column_cpp <- function(matrix, rows, column) {
+    .Call(`_PACE_pace_subset_column_cpp`, matrix, rows, column)
+}
+
+pace_column_nonzero_rows_cpp <- function(matrix, column) {
+    .Call(`_PACE_pace_column_nonzero_rows_cpp`, matrix, column)
+}
+
+pace_pair_variance_pratt_cpp <- function(sigma, u) {
+    .Call(`_PACE_pace_pair_variance_pratt_cpp`, sigma, u)
+}
+
+pace_single_frame_focal_blocks_cpp <- function(focal_code, n_focals, pct, denom) {
+    .Call(`_PACE_pace_single_frame_focal_blocks_cpp`, focal_code, n_focals, pct, denom)
+}
+
+pace_all_finite_cpp <- function(values) {
+    .Call(`_PACE_pace_all_finite_cpp`, values)
+}
+
 solve_chunk_full_cpp <- function(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode = 0L, interior_precision = 0L) {
     .Call(`_PACE_solve_chunk_full_cpp`, X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode, interior_precision)
 }
