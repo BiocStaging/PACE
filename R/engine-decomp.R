@@ -157,6 +157,15 @@ mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
     beta_spill <- fit$B[spill_idx, , drop = FALSE]
   }
 
+  ## The statistics are indexed by position, from names resolved once, so a
+  ## mismatch is an error rather than a silently repeated row.
+  stat_rows <- match(focal_levels, rownames(stats$mu_mean))
+  stat_cols <- match(gene_names, colnames(stats$mu_mean))
+  if (anyNA(stat_rows) || anyNA(stat_cols))
+    stop("the fit's per-cell-type statistics do not cover every focal cell type and gene; ",
+         "re-run paceDecompose() on the object the model was fitted to.", call. = FALSE)
+  statistic_block <- function(values) values[stat_rows, stat_cols, drop = FALSE]
+
   if (anyNA(term2t[vars]))
     stop("variance decomposition: the celltype random-effect block has no term for ",
          paste(vars[is.na(term2t[vars])], collapse = ", "), call. = FALSE)
@@ -171,12 +180,17 @@ mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
     u = fit$U, se_u = fit$se_U, slope_rows = slope_rows, kernel_cov = kernel_cov,
     responder_rows = responder_rows, responder_keep = as.integer(responder_keep),
     responder_cov = responder_cov, intercept_rows = intercept_rows,
-    toff_var = if (use_bleed) stats$toff_var[focal_levels, gene_names, drop = FALSE] else empty_matrix,
+    toff_var = if (use_bleed) statistic_block(stats$toff_var) else empty_matrix,
     spill_cov = spill_cov, beta_spill = beta_spill,
-    mu_mean = stats$mu_mean[focal_levels, gene_names, drop = FALSE],
+    mu_mean = statistic_block(stats$mu_mean),
     alpha = unname(fit$alpha), nb1 = disp_model == "nb1", n_threads = threads)
 
   keep <- blocks$keep == 1L
+  ## The per-cell implementation carried the gene names of the count means into
+  ## these four columns, and older stored tables have them, so they are restored
+  ## here rather than left to the vectors the core returns.
+  row_genes <- rep(gene_names, times = length(focal_levels))
+  named_by_gene <- function(values) stats::setNames(values[keep], row_genes[keep])
   gene_focal_5block <- tibble::tibble(
     gene = rep(gene_names, times = length(focal_levels)),
     focal = rep(focal_levels, each = length(gene_names)),
@@ -192,6 +206,10 @@ mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
     `Responder spatial state %` = blocks$pct_responder,
     `Spillover %`               = blocks$pct_spill,
     `Residual %`                = blocks$pct_residual)[keep, ]
+  gene_focal_5block$focal_mean <- named_by_gene(blocks$focal_mean)
+  gene_focal_5block$max_other_mean <- named_by_gene(blocks$max_other_mean)
+  gene_focal_5block$spec <- named_by_gene(blocks$spec)
+  gene_focal_5block$focal_other_ratio <- named_by_gene(blocks$focal_other_ratio)
   .pace_decomposition_aggregates(gene_focal_5block, weight_by_spec_sq, disp_model)
 }
 

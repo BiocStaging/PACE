@@ -31,6 +31,9 @@
 ## reimplemented.
 
 fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
+                                     ## the random-effect design, when the caller
+                                     ## has already built it from `re_specs`
+                                     re               = NULL,
                                      offset_vec       = NULL,
                                      n_iter           = 16, tol = 5e-3,
                                      disp_model       = c("nb1", "nb2"),
@@ -60,8 +63,13 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      bleed_percell     = FALSE,
                                      percell_anchor_mask = NULL,  ## n_types x G (with percell_anchor_idx) OR n x G
                                      percell_anchor_idx  = NULL,  ## length-n celltype index 1..n_types
-                                     return_mu         = FALSE,   ## when TRUE assemble + return full n x G mu and
-                                                                  ## technical_offset_mat (BC validation only).
+                                     ## DEPRECATED. The fit stores the per-cell-type
+                                     ## statistics every readout needs, and mu is a
+                                     ## deterministic function of what it already holds
+                                     ## (.pace_mu_block()), so keeping the n x G matrices
+                                     ## only costs memory. TRUE still returns them, with a
+                                     ## warning, for code that has not moved over yet.
+                                     return_mu         = FALSE,
                                      ## ---- Guarded speed approximations (defaults ENABLE the safe mode) ----
                                      ## alpha_warmup: only re-fit the alpha dispersion MLE for the first
                                      ##   `alpha_warmup` iterations (and the last iteration); afterwards
@@ -69,6 +77,12 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      ##   per-iter cost (serial) and converges quickly. Set Inf to always
                                      ##   update (exact).
                                      alpha_warmup      = 10L,
+                                     ## alpha_zero_collapse: evaluate the NB1 dispersion
+                                     ##   likelihood with the zero-count block collapsed into
+                                     ##   one term (algebraically exact and about twice as
+                                     ##   fast on a sparse panel, but the reassociated sum
+                                     ##   moves alpha in its last digits, and the fit with it).
+                                     alpha_zero_collapse = FALSE,
                                      ## early_stop_tol / min_iter: break the IRLS loop once the streamed
                                      ##   MEAN rel_delta (mean over cell-genes of |Delta eta|/max(|eta|,1e-3))
                                      ##   falls below early_stop_tol, but never before min_iter iterations.
@@ -90,6 +104,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      verbose           = TRUE) {
   tau_shrinkage <- match.arg(tau_shrinkage)
   disp_model    <- match.arg(disp_model)
+  if (isTRUE(return_mu))
+    warning("`return_mu` is deprecated: the fit stores the per-cell-type statistics the ",
+            "readouts need, and mu can be rebuilt from the fit and the counts.",
+            call. = FALSE)
 
   ## ---- Y stays SPARSE; never densify the whole matrix. -------------------
   if (!methods::is(Y, "dgCMatrix")) {
@@ -109,7 +127,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                           error = function(e) 1L)
   n_threads <- max(1L, as.integer(n_threads))
 
-  re <- build_random_design_multi(df, re_specs)
+  if (is.null(re)) re <- build_random_design_multi(df, re_specs)
   Z  <- re$Z; q <- ncol(Z)
   if (verbose) {
     blk_str <- paste(vapply(re$blocks, function(b)
@@ -214,21 +232,16 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                tau_max_seen = numeric())    ## largest variance component per iteration
   converged <- FALSE
 
+  ## The EM update of the variance components is pace::tau_em_update: per
+  ## random-effect column, max(mean over genes of u^2 + V, 1e-6). R only lays the
+  ## columns back out as one matrix per block.
   .em_tau_blocks <- function(U_, V_) {
-    out <- vector("list", length(re$blocks))
-    for (bi in seq_along(re$blocks)) {
-      blk_i <- re$blocks[[bi]]
-      m <- matrix(NA_real_, blk_i$K_terms, blk_i$K_groups,
-                  dimnames = list(blk_i$term_levels, blk_i$group_levels))
-      for (t in seq_len(blk_i$K_terms)) {
-        for (c in seq_len(blk_i$K_groups)) {
-          col <- blk_i$col_offset + (t - 1L) * blk_i$K_groups + c
-          m[t, c] <- pmax(mean(U_[col, ]^2 + V_[col, ], na.rm = TRUE), 1e-6)
-        }
-      }
-      out[[bi]] <- m
-    }
-    out
+    tau_vec <- pace_tau_em_update_cpp(U_, V_)
+    lapply(re$blocks, function(blk_i) {
+      rng <- (blk_i$col_offset + 1L):(blk_i$col_offset + blk_i$n_cols)
+      matrix(tau_vec[rng], blk_i$K_terms, blk_i$K_groups, byrow = TRUE,
+             dimnames = list(blk_i$term_levels, blk_i$group_levels))
+    })
   }
 
   ## ---- SPEED 1: cache a = ambient_W %*% Y ONCE (algebraically a_cache IS the
@@ -237,12 +250,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## dense matrix; for WTA the product stays sparse. All call sites below become
   ## cheap cached column subsets instead of re-running the sparse multiply each
   ## of the (multiple) passes per iteration.
-  a_cache <- ambient_W %*% Y
-  ## Helper: dense ambient chunk a_chk = (ambient_W %*% Y)[, chunk]  (n x |chunk|),
-  ## served from the precomputed cache (identical to ambient_W %*% Y[, chunk]).
-  .a_chunk <- function(gene_idx_chk) {
-    as.matrix(a_cache[, gene_idx_chk, drop = FALSE])
-  }
+  ## The cache stays SPARSE: every pass below reads it one gene at a time in
+  ## C++, so no dense n x |chunk| ambient block is ever formed.
+  a_cache <- .pace_as_dgc(ambient_W %*% Y)
 
   ## ---- SPEED (element-wise): fixed-effect contribution X_fixed %*% coef[,chunk].
   ## When p == 1 (intercept-only under E^tech) the BLAS matrix-multiply is
@@ -269,6 +279,24 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   alpha_PARAM <- if (n_threads > 1L)
     BiocParallel::MulticoreParam(workers = n_threads)
   else BPPARAM
+
+  ## The anchor mask as the core reads it: either n_types x G with a per-cell
+  ## type index, or n x G with none. An empty matrix means no masking.
+  mask_matrix <- if (is.null(percell_anchor_mask)) matrix(0, 0, 0) else percell_anchor_mask
+  mask_index  <- if (is.null(percell_anchor_idx)) integer(0) else as.integer(percell_anchor_idx)
+  empty_matrix <- matrix(0, 0, 0)
+  ## the diagnostic pass wants only the per-cell row sums, so every cell is in
+  ## the same nominal group
+  diagnostic_group <- integer(n)
+  sample_weight_vec <- if (is.null(sample_weight)) numeric(0) else as.numeric(sample_weight)
+  ## Genes inside a logical chunk are processed a few at a time, so the dense
+  ## n x |sub-block| linear predictor is the only working matrix besides the
+  ## chunk's z, w and ridge, which the chunk solve needs whole. The float/double
+  ## gate still reads the whole logical chunk (max over its genes of colSums(w)).
+  sub_genes <- max(1L, min(as.integer(chunk_size), 16L))
+  .eta_block <- function(coef_B, coef_U, genes) {
+    .xb_chunk(coef_B, genes) + as.matrix(Z %*% coef_U[, genes, drop = FALSE])
+  }
 
   ## At iteration 1 there are no coefficients yet, so mu_bio is undefined. The
   ## dense solver seeds mu <- pmax(Y, 0.5) and mu_bio <- mu, mu_spill <- 0. We
@@ -308,67 +336,48 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       gene_idx_chk   <- cs:min(cs + chunk_size - 1L, g_n)
       iter_precision <- if (last_iter) 0L else as.integer(interior_precision)
 
-      Y_chk <- as.matrix(Y[, gene_idx_chk, drop = FALSE])
-      a_chk <- .a_chunk(gene_idx_chk)
-
-      if (it == 1L) {
-        ## Seed: dense mu = pmax(Y, 0.5); mu_bio = mu; mu_spill = 0.
-        mu_bio_chk <- pmax(Y_chk, 0.5)
-        mu_chk     <- mu_bio_chk
-      } else {
-        ## Reconstruct mu_bio_chk = exp(eta_chk + offset) and
-        ## mu_chk = mu_bio_chk + add_rho * a_chk  (== dense mu_bio / mu).
-        eta_chk    <- .xb_chunk(B, gene_idx_chk) +
-                      as.matrix(Z %*% U[, gene_idx_chk, drop = FALSE])
-        mu_bio_chk <- pmax(exp(eta_chk + offset_vec), 1e-6)
-        mu_spill_chk <- pmax(a_chk * add_rho, 0)   ## SPEED 3: row-scale (== sweep .,1,.,"*")
-        mu_chk     <- pmax(mu_bio_chk + mu_spill_chk, 1e-6)
-        rm(eta_chk, mu_spill_chk)
-      }
-
-      ## FUSED rho accumulation (Pass 1): mu_chk == mu_tot (mu_bio + previous-rho
-      ## spill). Uses the PRE-solve B,U (one-iter lag vs dense post-solve; same fixed
-      ## point). num/den math identical to the non-fused Pass 2 below.
+      m_chk <- length(gene_idx_chk)
+      z_chk <- matrix(0, n, m_chk)
+      w_chk <- matrix(0, n, m_chk)
+      colsum_w <- numeric(m_chk)
+      ## The FUSED path also needs the pre-solve linear predictor for its rho
+      ## accumulation, whose row sums run over the whole logical chunk, so it
+      ## builds eta at chunk width; the default path builds it per sub-block.
+      eta_chk <- if (fuse_rho && it > 1L) .eta_block(B, U, gene_idx_chk) else NULL
       if (fuse_rho) {
-        a_g <- alpha[gene_idx_chk]; nr <- nrow(mu_chk)
-        wcnt_chk <- if (disp_nb2)
-                      1 / (mu_chk * (1 + mu_chk * rep(a_g, each = nr)))
-                    else
-                      (1 / mu_chk) / rep(1 + a_g, each = nr)
-        WA_chk <- wcnt_chk * a_chk
-        if (!is.null(percell_anchor_mask)) {
-          if (!is.null(percell_anchor_idx)) {
-            mask_chk <- percell_anchor_mask[, gene_idx_chk, drop = FALSE]
-            WA_chk   <- WA_chk * mask_chk[percell_anchor_idx, , drop = FALSE]
-          } else {
-            WA_chk <- WA_chk * percell_anchor_mask[, gene_idx_chk, drop = FALSE]
-          }
-        }
-        num <- num + rowSums(WA_chk * Y_chk, na.rm = TRUE)
-        den <- den + rowSums(WA_chk * a_chk, na.rm = TRUE)
-        rm(a_g, wcnt_chk, WA_chk)
+        ## num/den from the PRE-solve B,U (one-iteration lag vs the dense
+        ## post-solve; same fixed point), with no convergence metric: the fused
+        ## path uses a coefficient metric below.
+        acc <- pace_rho_accumulate_cpp(
+          if (it == 1L) empty_matrix else eta_chk, empty_matrix, Y, a_cache, gene_idx_chk[1L],
+          offset_vec, add_rho, alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
+          seed_iteration = (it == 1L), seed_previous = FALSE, n_cells = n, n_genes_in = m_chk,
+          want_tail_counts = FALSE)
+        num <- acc$num
+        den <- acc$den
+        rm(acc)
       }
-
-      ## Partial-offset IRLS (additive_active branch, dense lines ~277-283):
-      ## z = eta + (y - mu)/mu_bio ;  w = mu_bio^2 / (mu (1+alpha[*mu])).
-      eta_chk <- log(mu_bio_chk) - offset_vec
-      z_chk   <- eta_chk + (Y_chk - mu_chk) / mu_bio_chk
-      ## SPEED 3: column-scale via rep(v, each = nrow) (column-major: each column j
-      ## is scaled by v[j]) == sweep(M, 2, v, .). a_irls_chk has length |chunk|.
-      a_irls_chk <- alpha[gene_idx_chk]
-      n_chk_rows <- nrow(mu_bio_chk)
-      w_chk   <- if (disp_nb2)
-                   (mu_bio_chk^2) /
-                     (mu_chk * (1 + mu_chk * rep(a_irls_chk, each = n_chk_rows)))
-                 else
-                   ((mu_bio_chk^2) / mu_chk) /
-                     rep(1 + a_irls_chk, each = n_chk_rows)
-      rm(eta_chk, mu_bio_chk, mu_chk)
-      if (!is.null(sample_weight)) w_chk <- w_chk * sample_weight
+      for (sub in seq.int(1L, m_chk, by = sub_genes)) {
+        jj <- sub:min(sub + sub_genes - 1L, m_chk)
+        eta_sub <- if (it == 1L) empty_matrix
+                   else if (!is.null(eta_chk)) eta_chk[, jj, drop = FALSE]
+                   else .eta_block(B, U, gene_idx_chk[jj])
+        working <- pace_working_response_cpp(
+          eta_sub, Y, a_cache, gene_idx_chk[jj][1L], length(jj), offset_vec, add_rho,
+          alpha[gene_idx_chk[jj]], sample_weight_vec, disp_nb2, it == 1L, n, n_threads)
+        z_chk[, jj] <- working$z
+        w_chk[, jj] <- working$w
+        colsum_w[jj] <- working$colsum_w
+        rm(eta_sub, working)
+      }
+      rm(eta_chk)
       lam_chk <- lam_diag_mat[, gene_idx_chk, drop = FALSE]
       ## Keep the ridge out of single precision: below eps_float * sum(w) it is
-      ## quantised away, at a threshold that falls as 1/n.
-      if (iter_precision != 0L && .ridge_needs_double(lam_chk, w_chk))
+      ## quantised away, at a threshold that falls as 1/n. The decision is made
+      ## over the whole logical chunk, exactly as before the sub-block split.
+      if (iter_precision != 0L &&
+          .ridge_needs_double_from(suppressWarnings(min(lam_chk, na.rm = TRUE)),
+                                   suppressWarnings(max(colsum_w))))
         iter_precision <- 0L
 
       per_gene_chk <- .solve_genes_chunk_multiblock(
@@ -431,7 +440,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
           se_U[, gi] <- sqrt(pmax(res$Ainv_diag[(p + 1):(p + q)], 0))
         }
       }
-      rm(per_gene_chk, z_chk, w_chk, lam_chk, Y_chk, a_chk)
+      rm(per_gene_chk, z_chk, w_chk, lam_chk, colsum_w)
     }
 
     ## ----- Per-cell contamination update (streaming rho accumulation) -----
@@ -459,66 +468,35 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## (fuse_rho=TRUE) OR this dedicated post-solve second pass (default). The
     ## accumulators were initialised before Pass 1.
     if (!fuse_rho) {
+    ## One core call per logical chunk (pace::rho_accumulate): it reads the
+    ## counts and the ambient field sparsely, rebuilds mu_tot from the PREVIOUS
+    ## rho as the dense solver did, accumulates num/den in long double across
+    ## the chunk's genes in column order, and returns the convergence metric
+    ## max(|eta - prev_eta| / max(|prev_eta|, 1e-3)) over the same pass. A
+    ## non-finite (cell, gene) contributes nothing to num/den, as rowSums with
+    ## na.rm did, and is counted so a lossy fit cannot report convergence.
     for (cs in chk_starts) {
       gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-      Y_chk <- as.matrix(Y[, gene_idx_chk, drop = FALSE])
-      a_chk <- .a_chunk(gene_idx_chk)
-      eta_chk    <- .xb_chunk(B, gene_idx_chk) +
-                    as.matrix(Z %*% U[, gene_idx_chk, drop = FALSE])
-      ## rel_delta (fused): eta_chk above is the "new" side.
-      prev_eta_chk <- if (!prev_eta_set)
-                        log(pmax(Y_chk, 0.5)) - offset_vec
-                      else
-                        .xb_chunk(prev_B, gene_idx_chk) +
-                        as.matrix(Z %*% prev_U[, gene_idx_chk, drop = FALSE])
-      rd_chunk <- abs(eta_chk - prev_eta_chk) / pmax(abs(prev_eta_chk), 1e-3)
-      rel_delta <- max(rel_delta, max(rd_chunk, na.rm = TRUE))
-      ## mean metric: ALWAYS accumulated (cheap sums) -- drives early stop.
-      fin <- is.finite(rd_chunk)
-      rd_n   <- rd_n   + sum(fin)
-      rd_sum <- rd_sum + sum(rd_chunk[fin])
-      ## Everything the mask drops is a gene-cell that has gone non-finite;
-      ## counting it is what stops a lossy fit from reporting convergence.
-      rd_nonfinite <- rd_nonfinite + sum(!fin)
+      eta_chk <- .eta_block(B, U, gene_idx_chk)
+      prev_eta_chk <- if (!prev_eta_set) empty_matrix else .eta_block(prev_B, prev_U, gene_idx_chk)
+      acc <- pace_rho_accumulate_cpp(
+        eta_chk, prev_eta_chk, Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
+        alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
+        seed_iteration = FALSE, seed_previous = !prev_eta_set, n_cells = n,
+        n_genes_in = length(gene_idx_chk), want_tail_counts = RD_DIAG)
+      num <- acc$num
+      den <- acc$den
+      rel_delta <- max(rel_delta, acc$rel_delta_max)
+      rd_n   <- rd_n   + acc$n_finite
+      rd_sum <- rd_sum + acc$rel_delta_sum
+      rd_nonfinite <- rd_nonfinite + acc$n_nonfinite
       if (RD_DIAG) {       ## tail-fraction counts: diagnostic only
-        rd_g01 <- rd_g01 + sum(rd_chunk[fin] > 0.01)
-        rd_g05 <- rd_g05 + sum(rd_chunk[fin] > 0.05)
-        rd_g1  <- rd_g1  + sum(rd_chunk[fin] > 0.1)
-        rd_g10 <- rd_g10 + sum(rd_chunk[fin] > 1.0)
+        rd_g01 <- rd_g01 + acc$tail_counts[1L]
+        rd_g05 <- rd_g05 + acc$tail_counts[2L]
+        rd_g1  <- rd_g1  + acc$tail_counts[3L]
+        rd_g10 <- rd_g10 + acc$tail_counts[4L]
       }
-      rm(prev_eta_chk, rd_chunk, fin)
-      mu_bio_chk <- pmax(exp(eta_chk + offset_vec), 1e-6)
-      ## SPEED 3: row-scale a_chk by add_rho (length n = nrow). Column-major
-      ## recycling multiplies each column by add_rho element-wise == sweep(.,1,.,"*").
-      mu_spill_chk <- pmax(a_chk * add_rho, 0)   ## PREVIOUS rho (matches dense)
-      mu_tot_chk <- pmax(mu_bio_chk + mu_spill_chk, 1e-8)
-      a_g <- alpha[gene_idx_chk]
-      ## SPEED 3: column-scale via rep(v, each = nrow) == sweep(M, 2, v, .).
-      n_chk_rows <- nrow(mu_tot_chk)
-      wcnt_chk <- if (disp_nb2)
-                    1 / (mu_tot_chk * (1 + mu_tot_chk * rep(a_g, each = n_chk_rows)))
-                  else
-                    (1 / mu_tot_chk) / rep(1 + a_g, each = n_chk_rows)
-      WA_chk <- wcnt_chk * a_chk
-      if (!is.null(percell_anchor_mask)) {
-        if (!is.null(percell_anchor_idx)) {
-          mask_chk <- percell_anchor_mask[, gene_idx_chk, drop = FALSE]   ## n_types x |chunk|
-          WA_chk   <- WA_chk * mask_chk[percell_anchor_idx, , drop = FALSE]
-        } else {
-          WA_chk <- WA_chk * percell_anchor_mask[, gene_idx_chk, drop = FALSE]
-        }
-      }
-      ## Defense in depth: the NaN-guard above re-solves any non-finite BLUP in
-      ## double, so WA_chk should be all-finite here. Should a gene STILL be
-      ## non-finite (a truly singular gene that even double cannot solve), its
-      ## column must NOT NaN-poison den/num for every cell via rowSums. rowSums
-      ## with na.rm=TRUE drops only that one (cell, gene) contribution, leaving
-      ## every other gene's contribution to each cell's num/den intact (exact for
-      ## the canonical all-finite case).
-      num <- num + rowSums(WA_chk * Y_chk, na.rm = TRUE)
-      den <- den + rowSums(WA_chk * a_chk, na.rm = TRUE)
-      rm(Y_chk, a_chk, eta_chk, mu_bio_chk, mu_spill_chk, mu_tot_chk,
-         wcnt_chk, WA_chk)
+      rm(eta_chk, prev_eta_chk, acc)
     }
     } else {
       ## Fused path: num/den already accumulated in Pass 1. COEFFICIENT-based
@@ -542,49 +520,28 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## rel_delta is now fully accumulated (Pass 2 or fused). After iter 1 the dense
     ## seed is no longer the previous eta (prev_B/prev_U are).
     prev_eta_set <- TRUE
-    ## SPEED 3: branch-free ratio (ifelse evaluates both arms over the whole
-    ## vector; this only divides where den is non-trivial). Identical result.
-    rho_ratio <- numeric(length(den))
-    ## Guard non-finite den/num (a degenerate cell with extreme mu): such a cell
-    ## carries NO contamination information -> rho=0 there, and it must not NaN-
-    ## poison the precision-weighted prior (den_w drops it). Preserves every other
-    ## cell's result exactly. n_bad is logged so widespread non-finiteness (a real
-    ## divergence, not a stray cell) is visible rather than silently absorbed.
-    finite_cell <- is.finite(den) & is.finite(num)
-    den_ok      <- finite_cell & den > 1e-12
-    rho_ratio[den_ok] <- num[den_ok] / den[den_ok]
-    rho_raw <- pmax(rho_ratio, 0)
-    ## SPEED (element-wise): branch-free den_w (ifelse evaluates/allocates both
-    ## arms over the whole vector). Identical: den where (finite & den>0), else 0.
-    den_pos <- finite_cell & den > 0
-    den_w   <- numeric(length(den))                      # non-finite -> 0 weight
-    den_w[den_pos] <- den[den_pos]
-    n_bad   <- sum(!finite_cell)
+    ## Empirical-Bayes shrink of the per-cell loading (pace::rho_shrink). A cell
+    ## with non-finite accumulators carries no contamination information, so it
+    ## gets the prior and drops out of the precision weights; the count is
+    ## logged so a real divergence is visible rather than silently absorbed.
+    shrunk  <- pace_rho_shrink_cpp(num, den)
+    add_rho <- shrunk$rho
+    n_bad   <- shrunk$n_nonfinite
     if (verbose && n_bad > 0L)
       cat(sprintf("    [percell_bleed] it=%d guarded %d/%d non-finite den/num cells (rho=prior there)\n",
                   it, n_bad, length(den)))
-    rho_bar <- sum(den_w * rho_raw) / pmax(sum(den_w), 1e-12)
-    den_nz  <- den_w[den_w > 1e-12]
-    if (length(den_nz)) {
-      den0    <- stats::quantile(den_nz, 0.10, names = FALSE)
-      add_rho <- pmax((den_w * rho_raw + den0 * rho_bar) / (den_w + den0), 0)
-    } else {
-      add_rho <- numeric(length(den))
-    }
     if (verbose && it <= 3) {
       ## Streamed contam_frac diagnostic (matches dense print).
       spill_sum <- numeric(n); tot_sum <- numeric(n)
       for (cs in chk_starts) {
         gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-        a_chk <- .a_chunk(gene_idx_chk)
-        eta_chk    <- .xb_chunk(B, gene_idx_chk) +
-                      as.matrix(Z %*% U[, gene_idx_chk, drop = FALSE])
-        mu_bio_chk <- pmax(exp(eta_chk + offset_vec), 1e-6)
-        mu_spill_chk <- pmax(a_chk * add_rho, 0)   ## SPEED 3: row-scale (== sweep .,1,.,"*")
-        mu_chk     <- pmax(mu_bio_chk + mu_spill_chk, 1e-6)
-        spill_sum  <- spill_sum + rowSums(mu_spill_chk)
-        tot_sum    <- tot_sum   + rowSums(mu_chk)
-        rm(a_chk, eta_chk, mu_bio_chk, mu_spill_chk, mu_chk)
+        eta_chk <- .eta_block(B, U, gene_idx_chk)
+        pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_cache, gene_idx_chk[1L],
+                                               add_rho, diagnostic_group, 1L,
+                                               want_groups = FALSE, return_matrices = FALSE)
+        spill_sum <- spill_sum + pass$spill_row_sum
+        tot_sum   <- tot_sum   + pass$total_row_sum
+        rm(eta_chk, pass)
       }
       fr <- spill_sum / pmax(tot_sum, 1e-9)
       cat(sprintf("    [percell_bleed] it=%d  rho_i [%.4f,%.4f] med=%.4f  contam_frac med=%.3f q90=%.3f\n",
@@ -605,22 +562,24 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     alpha_new <- numeric(g_n)
     for (cs in chk_starts) {
       gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-      Y_chk <- as.matrix(Y[, gene_idx_chk, drop = FALSE])
-      a_chk <- .a_chunk(gene_idx_chk)
-      eta_chk    <- .xb_chunk(B, gene_idx_chk) +
-                    as.matrix(Z %*% U[, gene_idx_chk, drop = FALSE])
-      mu_bio_chk <- pmax(exp(eta_chk + offset_vec), 1e-6)
-      mu_spill_chk <- pmax(a_chk * add_rho, 0)   ## SPEED 3: row-scale (== sweep .,1,.,"*")
-      mu_chk     <- pmax(mu_bio_chk + mu_spill_chk, 1e-6)
-      ## SPEED 2: alpha MLE on the FORKED param (deterministic per gene).
-      a_list <- BiocParallel::bplapply(seq_along(gene_idx_chk),
-                  function(jj) {
-                    gi <- gene_idx_chk[jj]
-                    if (disp_nb2) .alpha_nb2_mle(Y_chk[, jj], mu_chk[, jj], max_n = alpha_max_n)
-                    else          .alpha_nb1_mle(Y_chk[, jj], mu_chk[, jj], max_n = alpha_max_n)
-                  }, BPPARAM = alpha_PARAM)
-      alpha_new[gene_idx_chk] <- unlist(a_list, use.names = FALSE)
-      rm(Y_chk, a_chk, eta_chk, mu_bio_chk, mu_spill_chk, mu_chk, a_list)
+      m_chk <- length(gene_idx_chk)
+      for (sub in seq.int(1L, m_chk, by = sub_genes)) {
+        jj <- sub:min(sub + sub_genes - 1L, m_chk)
+        eta_sub <- .eta_block(B, U, gene_idx_chk[jj])
+        first_gene <- gene_idx_chk[jj][1L]
+        ## SPEED 2: alpha MLE on the FORKED param (deterministic per gene). Each
+        ## gene's fitted mean is rebuilt in C++ from that gene's column alone.
+        a_list <- BiocParallel::bplapply(seq_along(jj),
+                    function(k) {
+                      column <- pace_fitted_mean_column_cpp(eta_sub[, k], Y, a_cache, first_gene,
+                                                            k, offset_vec, add_rho)
+                      if (disp_nb2) .alpha_nb2_mle(column$y, column$mu, max_n = alpha_max_n)
+                      else          .alpha_nb1_mle(column$y, column$mu, max_n = alpha_max_n,
+                                                   zero_collapse = alpha_zero_collapse)
+                    }, BPPARAM = alpha_PARAM)
+        alpha_new[gene_idx_chk[jj]] <- unlist(a_list, use.names = FALSE)
+        rm(eta_sub, a_list)
+      }
     }
     alpha <- alpha_new
     alpha[!is.finite(alpha)] <- prev_alpha[!is.finite(alpha)]
@@ -651,12 +610,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
         d0_min_env <- as.numeric(Sys.getenv("R_D0_MIN", unset = "1"))
         tau_b_g <- if (tau_shrinkage == "adaptive") {
           .adaptive_tau_eb(s2_b, blk_i$K_terms, blk_i$K_groups,
-                           gene_names = colnames(Y),
-                           d0_min = d0_min_env,
-                           p_fixed = p)
+                           d0_min = d0_min_env, p_fixed = p)
         } else {
-          .adaptive_tau_half_cauchy(s2_b, blk_i$K_terms, blk_i$K_groups,
-                                    gene_names = colnames(Y))
+          .adaptive_tau_half_cauchy(s2_b, blk_i$K_terms, blk_i$K_groups)
         }
         tau_g_array[rng, ] <- tau_b_g
       }
@@ -706,8 +662,6 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                   hist$tau_max_seen[it],
                   as.numeric(difftime(Sys.time(), t_it, units = "secs"))))
     }
-    invisible(gc(verbose = FALSE))
-
     ## SPEED 4 (guarded): break once this iteration was flagged as the early-stop
     ## last_iter (SEs + final alpha already computed above this iteration).
     if (stop_now) {
@@ -760,11 +714,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   chk_starts <- seq.int(1L, g_n, by = max(1L, as.integer(chunk_size)))
   for (cs in chk_starts) {
     gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-    a_chk      <- .a_chunk(gene_idx_chk)
-    eta_chk    <- .xb_chunk(B, gene_idx_chk) +
-                  as.matrix(Z %*% U[, gene_idx_chk, drop = FALSE])
-    pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_chk, add_rho,
-                                           ct_code, length(ct_levels), return_mu)
+    eta_chk <- .eta_block(B, U, gene_idx_chk)
+    pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_cache, gene_idx_chk[1L],
+                                           add_rho, ct_code, length(ct_levels),
+                                           want_groups = TRUE, return_matrices = return_mu)
     mu_celltype_sum[, gene_idx_chk] <- pass$mu_group_sum
     toff_var[, gene_idx_chk] <- pass$toff_variance
     toff_any_nonzero <- toff_any_nonzero || pass$any_nonzero
@@ -775,7 +728,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       mu_full[, gene_idx_chk]   <- pass$mu
       toff_full[, gene_idx_chk] <- pass$toff
     }
-    rm(a_chk, eta_chk, pass)
+    rm(eta_chk, pass)
   }
   mu_celltype_means <- mu_celltype_sum / pmax(n_by_ct, 1L)
   mu_global_mean    <- mu_global_sum / n

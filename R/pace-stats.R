@@ -76,7 +76,7 @@
   toff_any_nonzero <- FALSE
   for (start in seq(1L, length(genes), by = genes_per_block)) {
     gene_idx <- start:min(start + genes_per_block - 1L, length(genes))
-    block <- .pace_mu_block(object, NULL, inputs, gene_idx = gene_idx)
+    block <- .pace_mu_block(object, inputs, gene_idx = gene_idx)
     if (is.null(block$mu_spill)) {
       mu_block <- block$mu_bio
       toff_block <- NULL

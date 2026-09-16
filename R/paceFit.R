@@ -9,10 +9,17 @@
   if (!celltype_col %in% colnames(cd))
     stop("celltype_col '", celltype_col, "' not found in colData.", call. = FALSE)
 
-  ## counts are genes x cells in an SPE; PACE wants cells x genes.
-  Y <- t(as.matrix(SummarizedExperiment::assay(object, assay_name)))
+  ## counts are genes x cells in an SPE; PACE wants cells x genes, and keeps
+  ## them sparse all the way into the solver.
+  Y <- .pace_as_dgc(Matrix::t(SummarizedExperiment::assay(object, assay_name)))
+  ## Feature names index every reported table, so duplicates would make two
+  ## different genes share one row of the statistics and one row of the output.
+  if (anyDuplicated(colnames(Y)))
+    stop("the assay has duplicated feature names (",
+         paste(utils::head(unique(colnames(Y)[duplicated(colnames(Y))]), 3), collapse = ", "),
+         "); make them unique before fitting.", call. = FALSE)
   ## a zero library size makes the log offset and log1p CP10k undefined
-  empty_cells <- sum(rowSums(Y) == 0)
+  empty_cells <- sum(Matrix::rowSums(Y) == 0)
   if (empty_cells > 0L)
     stop(empty_cells, " cell(s) have zero total counts; remove them before fitting.",
          call. = FALSE)
@@ -60,8 +67,15 @@
   if (is.null(block)) return(NULL)
   nCount   <- as.numeric(Matrix::rowSums(Y))
   celltype <- df[[celltype_col]]
+  ## The fallback exists for fits whose blocks cannot be mapped onto the observed
+  ## frame at all; it must say so rather than quietly returning a different table.
   tryCatch(single_frame_decomp_obs(Y, celltype, nCount, block),
-           error = function(e) block)
+           error = function(e) {
+             warning("the observed single-frame decomposition failed (",
+                     conditionMessage(e), "); reporting the fit's own block table ",
+                     "instead, which has different columns.", call. = FALSE)
+             block
+           })
 }
 
 ## ===========================================================================

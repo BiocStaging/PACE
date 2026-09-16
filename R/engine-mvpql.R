@@ -176,8 +176,15 @@ build_random_design_multi <- function(df, re_specs) {
 # (i.e., apply full shrinkage to the panel mean).
 .estimate_d0 <- function(log_s2, d_g = 1, d0_max = 5) {
   log_s2 <- log_s2[is.finite(log_s2)]
-  if (length(log_s2) < 5L) return(d0_max)
-  v_obs  <- stats::var(log_s2)
+  .estimate_d0_from(stats::var(log_s2), length(log_s2), d_g = d_g, d0_max = d0_max)
+}
+
+# The second half of .estimate_d0(), given the cross-gene variance of log s2 and
+# how many genes entered it. The variance itself is computed in C++
+# (pace::tau_eb_summaries); the root-find stays here because it is R's own
+# trigamma() and uniroot().
+.estimate_d0_from <- function(v_obs, n_used, d_g = 1, d0_max = 5) {
+  if (n_used < 5L || !is.finite(v_obs)) return(d0_max)
   excess <- v_obs - trigamma(d_g / 2)
   ## When excess <= 0, the strict marginal-MLE says all variability is
   ## sampling noise (d_0 = Inf). For BLUPs from a strongly-shrunk fit this
@@ -298,16 +305,18 @@ build_random_design_multi <- function(df, re_specs) {
     if (focal_sizes[f_index] > 0L) det_rate[f_index, ] <- det_means[f_index, ]
   }
 
-  ## K-variance per (focal, neighbour) from raw df columns if present
+  ## K-variance per (focal, neighbour): the diagonal of the focal's kernel-column
+  ## covariance, which is stats::var over that focal's cells. A focal with fewer
+  ## than five cells carries no usable variance and stays NA, as before.
   K_var <- matrix(NA_real_, length(focals), length(TYPES),
                   dimnames = list(focals, TYPES))
-  for (f in focals) {
-    cells <- which(ct_chr == f)
-    if (length(cells) < 5) next
-    for (nb in TYPES) {
-      if (nb %in% names(df)) {
-        K_var[f, nb] <- stats::var(df[[nb]][cells], na.rm = TRUE)
-      }
+  present <- TYPES[TYPES %in% names(df)]
+  if (length(present)) {
+    covariance <- .pace_group_covariances(df[, present, drop = FALSE], ct_chr, focals, threads)
+    for (f_index in seq_along(focals)) {
+      if (focal_sizes[f_index] < 5L) next
+      K_var[f_index, present] <- diag(matrix(covariance[, , f_index], length(present),
+                                             length(present)))
     }
   }
   ## Normalise K_var per focal to [0, 1] so the weighting is scale-free across focals
@@ -319,11 +328,16 @@ build_random_design_multi <- function(df, re_specs) {
   }
   K_var_norm[is.na(K_var_norm)] <- 0
 
-  ## Walk through each random-effect block and assign W[q, g] per (focal, term)
+  ## Walk through each random-effect block and record, for every random-effect
+  ## column, which focal's detection profile it takes and how its neighbour's
+  ## K-variance scales it. A column of another block (imageID) keeps weight 1.
+  focal_of_row <- integer(q)
+  scale_of_row <- numeric(q)
   for (bi in seq_along(re$blocks)) {
     blk_i <- re$blocks[[bi]]
     is_celltype_blk <- identical(blk_i$group_col, celltype_col) ||
                        all(blk_i$group_levels %in% focals)
+    if (!is_celltype_blk) next
     for (t in seq_len(blk_i$K_terms)) {
       term <- blk_i$term_levels[t]
       ## Determine if this term is a K-slope (i.e., references a neighbour celltype)
@@ -337,17 +351,9 @@ build_random_design_multi <- function(df, re_specs) {
       for (c in seq_len(blk_i$K_groups)) {
         focal <- blk_i$group_levels[c]
         col_idx <- blk_i$col_offset + (t - 1L) * blk_i$K_groups + c
-
-        if (is_celltype_blk) {
-          d_vec <- det_rate[focal, ]                       # per-gene detection in this focal
-          if (is_K_slope) {
-            kv <- K_var_norm[focal, K_nb_match[1L]]        # K-variance for this neighbour
-            W[col_idx, ] <- d_vec * kv
-          } else {
-            W[col_idx, ] <- d_vec                          # intercept / Responder terms
-          }
-        }
-        ## imageID and other group blocks left at 1 (no data-weighting)
+        focal_of_row[col_idx] <- match(focal, focals)
+        ## intercept / Responder terms take the detection profile unscaled
+        scale_of_row[col_idx] <- if (is_K_slope) K_var_norm[focal, K_nb_match[1L]] else 1
       }
     }
   }
@@ -355,13 +361,11 @@ build_random_design_multi <- function(df, re_specs) {
   ## Per-term normalisation: divide each row by its maximum so the most-
   ## informative gene in that row has W = 1 (no extra shrinkage relative to
   ## PACE's own EB-estimated tau) and everything else scales linearly with
-  ## its detection × K-variance.  No exponent, no arbitrary floor -- just
-  ## numerical safety against W = 0 in the per-gene WLS solve.
-  for (i in seq_len(q)) {
-    m <- max(W[i, ], na.rm = TRUE)
-    if (is.finite(m) && m > 0) W[i, ] <- W[i, ] / m
-  }
-  W <- pmax(W, 1e-8)   # numerical safety only
+  ## its detection x K-variance. No exponent, no arbitrary floor -- just
+  ## numerical safety against W = 0 in the per-gene WLS solve
+  ## (pace::data_informed_weights).
+  W <- pace_data_informed_weights_cpp(det_rate, focal_of_row, scale_of_row)
+  dimnames(W) <- list(colnames(re$Z), colnames(Y))
 
   if (verbose) {
     cat(sprintf("  [data-informed tau] q x G weight matrix: dim %d x %d, range [%.3f, %.3f], median %.3f\n",
@@ -371,20 +375,9 @@ build_random_design_multi <- function(df, re_specs) {
 }
 
 .shrink_tau_hierarchical <- function(tau_mat, n_per_group, lambda_factor = 0.5) {
-  K_t <- nrow(tau_mat); K_g <- ncol(tau_mat)
-  if (length(n_per_group) != K_g) return(tau_mat)
-  if (any(n_per_group <= 0)) {
-    n_per_group[n_per_group <= 0] <- 1
-  }
-  lambda <- lambda_factor * stats::median(n_per_group)
-  w_c    <- n_per_group / (n_per_group + lambda)
-  out    <- tau_mat
-  for (t in seq_len(K_t)) {
-    tau_local  <- tau_mat[t, ]
-    tau_global <- sum(n_per_group * tau_local) / sum(n_per_group)
-    out[t, ]   <- w_c * tau_local + (1 - w_c) * tau_global
-  }
-  pmax(out, 1e-6)
+  out <- pace_tau_hierarchical_cpp(tau_mat, as.integer(n_per_group), lambda_factor)
+  dimnames(out) <- dimnames(tau_mat)
+  out
 }
 
 # Bound the variance components from above.
@@ -396,14 +389,16 @@ build_random_design_multi <- function(df, re_specs) {
 # identified by the data, so it is reported rather than applied silently.
 .clamp_tau <- function(tau, tau_max, it = NA_integer_) {
   if (is.null(tau_max) || !is.finite(tau_max)) return(tau)
-  n_bind <- sum(tau > tau_max, na.rm = TRUE)
+  capped <- pace_tau_clamp_cpp(tau, tau_max)
+  n_bind <- capped$n_binding
   if (n_bind > 0L) {
     warning(sprintf(
       paste0("iter %s: %d variance component(s) reached tau_max = %.4g. A binding cap ",
              "means the term is identified only by the ridge; inspect the design rather ",
              "than raising the cap."),
       as.character(it), n_bind, tau_max), call. = FALSE)
-    tau <- pmin(tau, tau_max)
+    tau <- capped$tau
+    dimnames(tau) <- dimnames(capped$tau)
   }
   tau
 }
@@ -419,8 +414,14 @@ build_random_design_multi <- function(df, re_specs) {
 # design lose their ridge purely by growing the cohort. Threshold (~84 float
 # ulps) follows the correctness audit's recommendation.
 .ridge_needs_double <- function(lam_chk, w_chk) {
-  lam_min <- suppressWarnings(min(lam_chk, na.rm = TRUE))
-  w_max   <- suppressWarnings(max(colSums(w_chk, na.rm = TRUE)))
+  .ridge_needs_double_from(suppressWarnings(min(lam_chk, na.rm = TRUE)),
+                           suppressWarnings(max(colSums(w_chk, na.rm = TRUE))))
+}
+
+# The same decision from the two statistics it reads, so a caller that builds the
+# chunk's weights a few genes at a time can accumulate them without holding the
+# whole chunk: both are per gene, so the decision is the chunk's either way.
+.ridge_needs_double_from <- function(lam_min, w_max) {
   is.finite(lam_min) && is.finite(w_max) && lam_min < 1e-5 * w_max
 }
 
@@ -430,121 +431,52 @@ build_random_design_multi <- function(df, re_specs) {
                                        a_prev         = NULL,
                                        n_em_iter      = 5L,
                                        tau_floor      = 1e-4) {
-  q <- nrow(s2_mat); G <- ncol(s2_mat)
-  stopifnot(q == K_t * K_g)
-  out       <- matrix(NA_real_, q, G,
-                       dimnames = list(rownames(s2_mat), gene_names))
-  lambda_sq <- numeric(q)
-  a_out     <- matrix(NA_real_, q, G)
-  panel     <- numeric(q)
-
-  for (k in seq_len(q)) {
-    s2_g <- pmax(s2_mat[k, ], 1e-9)
-    panel[k] <- mean(s2_g, na.rm = TRUE)
-    ## Per-(term, group) panel floor matches `.adaptive_tau_eb` line 321:
-    ## prevents tau from collapsing to ~tau_floor when the half-Cauchy ECM
-    ## pulls aggressively, which would singularise the per-gene WLS solve
-    ## via 1/tau ridge penalty and crash IRLS at iter 2.
-    per_tc_floor <- max(panel[k] / 100, tau_floor)
-
-    ## Initial values
-    lam2 <- if (!is.null(lambda_sq_prev) && is.finite(lambda_sq_prev[k])) {
-      lambda_sq_prev[k]
-    } else {
-      pmax(stats::median(s2_g), 1e-3)
-    }
-    a_g <- if (!is.null(a_prev) && all(is.finite(a_prev[k, ]))) {
-      a_prev[k, ]
-    } else {
-      rep(lam2, G)
-    }
-    tau_g <- s2_g
-
-    ## ECM iterations
-    for (it_em in seq_len(n_em_iter)) {
-      ## CM-step for tau_g | (s2, a_g)
-      tau_g <- pmax((1 / a_g + s2_g / 2) / 2, per_tc_floor)
-      ## CM-step for a_g | (tau_g, lambda)
-      a_g   <- pmax((1 / tau_g + 1 / lam2) / 2, 1e-9)
-      ## M-step for lambda² (closed form from sum_g log p(a_g | lambda²))
-      lam2  <- pmax(2 * mean(1 / a_g, na.rm = TRUE), 1e-4)
-    }
-
-    out[k, ]      <- pmax(tau_g, per_tc_floor)
-    a_out[k, ]    <- a_g
-    lambda_sq[k]  <- lam2
-  }
-
-  attr(out, "lambda_sq") <- lambda_sq
-  attr(out, "a")         <- a_out
-  attr(out, "panel")     <- panel
+  stopifnot(nrow(s2_mat) == K_t * K_g)
+  fitted <- pace_tau_half_cauchy_cpp(
+    s2_mat, as.integer(n_em_iter), tau_floor,
+    if (is.null(lambda_sq_prev)) numeric(0) else as.numeric(lambda_sq_prev),
+    if (is.null(a_prev)) matrix(0, 0, 0) else as.matrix(a_prev))
+  out <- fitted$tau
+  dimnames(out) <- list(rownames(s2_mat), gene_names)
+  attr(out, "lambda_sq") <- fitted$lambda_sq
+  attr(out, "a")         <- fitted$a
+  attr(out, "panel")     <- fitted$panel
   out
 }
-
 
 .adaptive_tau_eb <- function(s2_mat, K_t, K_g, gene_names = NULL,
                               d0_min = 1, tau_floor = NULL,
                               p_fixed = 0L) {
-  q <- nrow(s2_mat); G <- ncol(s2_mat)
+  q <- nrow(s2_mat)
   stopifnot(q == K_t * K_g)
-  out <- matrix(NA_real_, q, G,
-                 dimnames = list(rownames(s2_mat), gene_names))
-  panel <- numeric(q); panel_med <- numeric(q); d0 <- numeric(q)
   ## Wolfinger-O'Connell (1993) / Schall (1991) REML correction on the variance-
-  ## component EM update.  PACE's PQL EM update used mean(û² + V̂), which is the
-  ## ML moment estimator and underestimates τ for sparse counts (Lin-Breslow
-  ## 1996 JASA 91:1007).  REML inflates τ by q / (q - p_fixed) where q is the
-  ## effective number of random-effect realisations.  In cross-gene pooling
-  ## (G ≈ 931, p_fixed ≈ 2), the inflation is ~1.002 — negligible at the
-  ## gene-pool level.  In per-block panel mean computation (used below), the
-  ## relevant q is the number of group-levels (K_g) in this block, which is
-  ## small for image blocks (q = 18) and celltype blocks (q = 7-9).  REML
-  ## factor q / (q - p_fixed) ≈ 1.20-1.40 for these blocks — non-negligible.
-  ## Apply REML inflation to BOTH per-gene s² and panel mean (so the EB
-  ## shrinkage target is also corrected upward).
-  USE_REML <- nzchar(Sys.getenv("R_REML_TAU", unset = ""))
-  for (t in seq_len(K_t)) {
-    for (c in seq_len(K_g)) {
-      k <- (t - 1L) * K_g + c
-      vals <- pmax(s2_mat[k, ], 1e-9)
-      ## REML inflation: in a single (term, group) cell, the random-effect
-      ## level cardinality contributing to û is K_g (group levels) * 1 (this
-      ## particular term).  Correction = K_g / (K_g - p_fixed).
-      reml_fac <- if (USE_REML && K_g > p_fixed) {
-        pmin(K_g / pmax(K_g - p_fixed, 1L), 2)
-      } else 1
-      vals <- vals * reml_fac
-      panel[k]     <- mean(vals, na.rm = TRUE)
-      panel_med[k] <- stats::median(vals, na.rm = TRUE)
-      ## Cap minimum d0: very weak shrinkage produces wild per-gene tau
-      ## that destabilise the per-gene WLS solve (LU singular). d0_min=1
-      ## means at least 50/50 between data and panel.
-      d0[k]    <- max(.estimate_d0(log(vals)), d0_min)
-      out[k, ] <- (d0[k] * panel[k] + vals) / (d0[k] + 1)
-    }
-  }
-  ## Floor: per-(t, c) at panel/100 OR a global tau_floor, whichever is larger.
-  ## This prevents 1/tau_g from blowing up the ridge penalty and singularising
-  ## the per-gene WLS system. The floor scale is the MEDIAN across genes, not
-  ## the mean: a single runaway gene lifts a mean-based floor for every gene in
-  ## the row (one gene at s2 = 2.9e5 among 931 lifted it to 3.1, two hundred
-  ## times a healthy tau). The EB shrinkage target above is left as the mean.
-  per_tc_floor <- pmax(panel_med / 100, 1e-4)
-  for (k in seq_len(q)) {
-    out[k, ] <- pmax(out[k, ],
-                      if (is.null(tau_floor)) per_tc_floor[k] else tau_floor)
-  }
-  attr(out, "panel") <- panel
+  ## component EM update. PACE's PQL EM update used mean(u^2 + V), the ML moment
+  ## estimator, which underestimates tau for sparse counts (Lin-Breslow 1996
+  ## JASA 91:1007). The inflation q / (q - p_fixed) is ~1.002 at the gene-pool
+  ## level but 1.20-1.40 per block, so it is applied to both the per-gene s2 and
+  ## the panel mean the shrinkage targets. Off unless R_REML_TAU is set.
+  use_reml <- nzchar(Sys.getenv("R_REML_TAU", unset = ""))
+  reml_fac <- if (use_reml && K_g > p_fixed) pmin(K_g / pmax(K_g - p_fixed, 1L), 2) else 1
+  summaries <- pace_tau_eb_summaries_cpp(s2_mat, reml_fac)
+  ## Cap the minimum d0: very weak shrinkage produces wild per-gene tau that
+  ## destabilise the per-gene WLS solve. d0_min = 1 means at least 50/50 between
+  ## the gene and the panel.
+  d0 <- vapply(seq_len(q), function(k)
+    max(.estimate_d0_from(summaries$log_variance[k], summaries$n_log_finite[k]), d0_min),
+    numeric(1))
+  out <- pace_tau_eb_apply_cpp(s2_mat, reml_fac, summaries$panel, summaries$panel_median, d0,
+                               if (is.null(tau_floor)) NA_real_ else tau_floor)
+  dimnames(out) <- list(rownames(s2_mat), gene_names)
+  attr(out, "panel") <- summaries$panel
   attr(out, "d0")    <- d0
   out
 }
-
 
 # NB1 MLE for the dispersion alpha given fitted mu and counts y.
 #
 # Reliable replacement for the Pearson moment estimator, which collapses
 # to ~0 under PQL when the working response makes mu ~= y by construction.
-.alpha_nb1_mle <- function(y, mu, max_n = Inf) {
+.alpha_nb1_mle <- function(y, mu, max_n = Inf, zero_collapse = FALSE) {
   y  <- as.numeric(y)
   mu <- as.numeric(mu)
   ok <- is.finite(mu) & mu > 1e-8
@@ -561,9 +493,30 @@ build_random_design_multi <- function(df, re_specs) {
     keep <- seq.int(1L, length(y), length.out = max_n)
     y <- y[keep]; mu <- mu[keep]
   }
-  nll <- function(log_alpha) {
-    a <- exp(log_alpha)
-    -sum(stats::dnbinom(y, size = mu / a, mu = mu, log = TRUE))
+  ## `zero_collapse` is D4 of the performance plan. Under NB1 the size is mu / a,
+  ## so a cell with y = 0 contributes
+  ##   log dnbinom(0; mu/a, mu) = (mu/a) log(1 / (1 + a)) = -(mu/a) log1p(a),
+  ## which depends on the cell only through mu. The whole zero block is then one
+  ## term, -log1p(a) / a * sum(mu over the zero cells), and dnbinom is evaluated
+  ## only on the non-zero counts (a fifth of them on a targeted panel).
+  ## Algebraically exact, but the sum is reassociated, so the optimiser lands a
+  ## few digits away and the fit moves with it: OFF by default, with the measured
+  ## effect recorded in the design note.
+  nll <- if (zero_collapse) {
+    is_zero     <- y == 0
+    mu_zero_sum <- sum(mu[is_zero])
+    y_nonzero   <- y[!is_zero]
+    mu_nonzero  <- mu[!is_zero]
+    function(log_alpha) {
+      a <- exp(log_alpha)
+      -(sum(stats::dnbinom(y_nonzero, size = mu_nonzero / a, mu = mu_nonzero, log = TRUE)) -
+        mu_zero_sum * log1p(a) / a)
+    }
+  } else {
+    function(log_alpha) {
+      a <- exp(log_alpha)
+      -sum(stats::dnbinom(y, size = mu / a, mu = mu, log = TRUE))
+    }
   }
   opt <- tryCatch(stats::optimize(nll, interval = c(-6, 4)),
                   error = function(e) NULL)

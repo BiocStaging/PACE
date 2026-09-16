@@ -438,32 +438,27 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   list(Y = Y, amb = amb)
 }
 
-## The two parts of the fitted mean for a block of cells (rows x genes):
-## mu_bio, and mu_spill (NULL without contamination). The one place the
-## rebuild formula lives, shared by the whole-matrix and chunked callers.
-## `rows` selects cells (NULL: all cells) and `gene_idx` selects genes (NULL: all
-## genes); a block is rows x genes. Each gene column is computed independently, so
-## any block split gives the same values.
-.pace_mu_block <- function(object, rows, inputs, gene_idx = NULL) {
+## The two parts of the fitted mean for a block of genes (all cells x gene_idx):
+## mu_bio, and mu_spill (NULL without contamination). The one place the rebuild
+## formula lives. `gene_idx` selects genes (NULL: all of them); each gene column
+## is computed independently, so any split of the genes gives the same values.
+## These expressions must stay in step with the solver's own final pass
+## (pace::final_pass_statistics), which a test ties them to.
+.pace_mu_block <- function(object, inputs, gene_idx = NULL) {
   f  <- object@fit
   df <- object@context$df
-  if (is.null(rows)) rows <- seq_len(nrow(df))
   if (is.null(gene_idx)) gene_idx <- seq_len(ncol(f$B))
-  all_rows <- length(rows) == nrow(df)
-  X_block <- if (all_rows) object@context$X_fixed else object@context$X_fixed[rows, , drop = FALSE]
-  Z_block <- if (all_rows) f$re_meta$Z else f$re_meta$Z[rows, , drop = FALSE]
 
   ## mu_bio = exp(eta + offset), offset = log library size (pace_fit_streaming).
-  eta    <- as.matrix(X_block %*% f$B[, gene_idx, drop = FALSE]) +
-            as.matrix(Z_block %*% f$U[, gene_idx, drop = FALSE])
-  mu_bio <- pmax(exp(eta + log(df$nCount[rows])), 1e-6)
+  eta    <- as.matrix(object@context$X_fixed %*% f$B[, gene_idx, drop = FALSE]) +
+            as.matrix(f$re_meta$Z %*% f$U[, gene_idx, drop = FALSE])
+  mu_bio <- pmax(exp(eta + log(df$nCount)), 1e-6)
   if (is.null(inputs$amb))
     return(list(mu_bio = mu_bio, mu_spill = NULL))
 
   ## Same expressions and floors as the solver's final pass.
-  W_block  <- if (all_rows) inputs$amb$W else inputs$amb$W[rows, , drop = FALSE]
-  ambient  <- as.matrix(W_block %*% inputs$Y[, gene_idx, drop = FALSE])
-  mu_spill <- pmax(ambient * f$percell_bleed_rho[rows], 0)
+  ambient  <- as.matrix(inputs$amb$W %*% inputs$Y[, gene_idx, drop = FALSE])
+  mu_spill <- pmax(ambient * f$percell_bleed_rho, 0)
   list(mu_bio = mu_bio, mu_spill = mu_spill)
 }
 
@@ -490,7 +485,13 @@ pace_fit_streaming <- function(Y, df, types = NULL,
                                n_iter = 32L, threads = 4L, chunk_size = 128L,
                                tau_shrinkage = "adaptive",
                                alpha_warmup = 6, early_stop_tol = 2e-2, min_iter = 12L,
-                               fuse = FALSE, return_mu = TRUE,
+                               ## speed option, see fit_pace_mvpql_streaming()
+                               alpha_zero_collapse = FALSE,
+                               fuse = FALSE,
+                               ## DEPRECATED: the fit keeps the per-cell-type statistics the
+                               ## readouts need, and mu is rebuilt on demand from the fit and
+                               ## the counts (.pace_mu_block()).
+                               return_mu = FALSE,
                                ## Upper bound on the variance components, passed to the fitter.
                                ## A binding cap means the term is identified only by the ridge.
                                tau_max = 100,
@@ -520,20 +521,20 @@ pace_fit_streaming <- function(Y, df, types = NULL,
     stop(sum(is.na(df$celltype)), " cell(s) have a missing cell type or one not in `types`; ",
          "remove them or add their type to `types`.", call. = FALSE)
   df$imageID  <- factor(as.character(df[[image_col]]))
+  ## The counts stay sparse from here on: every consumer (the kernels, the
+  ## anchors, the data-informed weights, the solver and the decomposition) reads
+  ## them column by column in C++.
+  Y <- .pace_as_dgc(Y)
   ## optional max-per-celltype detection re-filter (no-op at det_min = 0.05)
   if (det_min > 0.05 + 1e-6) {
-    ct_chr <- as.character(df$celltype)
-    ct_idx <- lapply(types, function(c) which(ct_chr == c))
-    max_det <- vapply(seq_len(ncol(Y)), function(gi)
-      max(vapply(ct_idx, function(idx)
-        if (length(idx) == 0L) 0 else mean(Y[idx, gi] > 0), numeric(1))), numeric(1))
-    Y <- Y[, which(max_det >= det_min), drop = FALSE]
+    codes <- .pace_codes(as.character(df$celltype), types)
+    detection <- pace_group_column_means_cpp(Y, codes, length(types), detection = TRUE,
+                                             n_threads = .pace_thread_count(threads))
+    detection[tabulate(codes + 1L, nbins = length(types)) == 0L, ] <- 0
+    Y <- Y[, which(apply(detection, 2, max) >= det_min), drop = FALSE]
   }
-  Y <- as.matrix(Y)
-  df$nCount <- rowSums(Y)
-  ## sparse counts for the compiled neighbourhood/count code and the solver
-  Y_sparse <- .pace_as_dgc(Y)
-  if (!is.null(colnames(Y))) colnames(Y_sparse) <- colnames(Y)
+  df$nCount <- as.numeric(Matrix::rowSums(Y))
+  Y_sparse <- Y
   coords <- as.matrix(df[, coord_cols])
   if (verbose)
     message(sprintf("pace_fit_streaming: %d cells x %d genes; %d images",
@@ -616,14 +617,15 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   }
 
   ## ---- 5. data-informed tau weights ----
+  ## The random-effect design is built ONCE here and handed to the solver, which
+  ## used to rebuild the same object (Z is the largest thing in it).
+  re_design <- build_random_design_multi(df, re_specs)
   data_informed_W <- NULL
   if (data_informed_tau) {
-    re_tmp <- build_random_design_multi(df, re_specs)
     data_informed_W <- .compute_data_informed_weights(
-      re = re_tmp, Y = Y_sparse, df = df,
-      focals = re_tmp$blocks[[1]]$group_levels, TYPES = types,
+      re = re_design, Y = Y_sparse, df = df,
+      focals = re_design$blocks[[1]]$group_levels, TYPES = types,
       celltype_col = "celltype", verbose = verbose, threads = threads)
-    rm(re_tmp)
   }
 
   ## ---- 6. PQL fit ----
@@ -634,7 +636,7 @@ pace_fit_streaming <- function(Y, df, types = NULL,
   ## feasible for targeted panels). The percell_hc path is unchanged.
   if (contamination == "percell_hc") {
     fit <- fit_pace_mvpql_streaming(
-      Y = Y_sparse, X_fixed = X_fixed, df = df, re_specs = re_specs,
+      Y = Y_sparse, X_fixed = X_fixed, df = df, re_specs = re_specs, re = re_design,
       offset_vec = offset_vec, data_informed_W = data_informed_W,
       ambient_W = ambient_W, ambient_image_idx = ambient_image_idx,
       ambient_n_images = ambient_n_images,
@@ -645,14 +647,17 @@ pace_fit_streaming <- function(Y, df, types = NULL,
       tau_shrinkage = tau_shrinkage,
       BPPARAM = BiocParallel::SerialParam(), n_threads = as.integer(threads),
       interior_precision = 1L, chunk_size = as.integer(chunk_size),
-      alpha_warmup = alpha_warmup, early_stop_tol = early_stop_tol,
+      alpha_warmup = alpha_warmup, alpha_zero_collapse = alpha_zero_collapse,
+      early_stop_tol = early_stop_tol,
       min_iter = as.integer(min_iter), fuse_rho = fuse,
       tau_max = tau_max,
       return_mu = return_mu, verbose = verbose)
   } else {
     ## contamination == "none": no ambient field; dense oracle (bleed_percell = FALSE).
+    ## The dense oracle solver reads a dense Y; it is only reachable on targeted
+    ## panels with contamination = "none".
     fit <- fit_pace_mvpql_joint_multi(
-      Y = Y, X_fixed = X_fixed, df = df, re_specs = re_specs,
+      Y = as.matrix(Y_sparse), X_fixed = X_fixed, df = df, re_specs = re_specs,
       offset_vec = offset_vec, data_informed_W = data_informed_W,
       n_iter = as.integer(n_iter), tol = 5e-3,
       disp_model = dispersion, tau_shrinkage = tau_shrinkage,
@@ -661,7 +666,7 @@ pace_fit_streaming <- function(Y, df, types = NULL,
       tau_max = tau_max, verbose = verbose)
   }
 
-  list(fit = fit, df = df, X_fixed = X_fixed, Y = Y,
+  list(fit = fit, df = df, X_fixed = X_fixed, Y = Y_sparse,
        K_tech = K_tech, K_bio = K_bio, types = types,
        ## Returned so the fit can record it: it is the one ambient-field input
        ## not otherwise recoverable from the fit, and .pace_mu() needs it to
@@ -683,7 +688,8 @@ pace_shrink <- function(fit, types, resp_term = NULL, ...) {
 ## `stats` are the per-cell-type statistics (.pace_fit_statistics(), pace-stats.R);
 ## `Y` is the sparse cells x genes counts, read only for per-type count means.
 ## ----------------------------------------------------------------------------
-pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL, stats, threads = 1L) {
+pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL,
+                           stats = fit$stats, threads = 1L) {
   dec <- mvpql_variance_decomposition_stats(
     fit = fit, stats = stats, df = df, Y = Y, vars = types,
     X_fixed = X_fixed, resp_term = resp_term, focal_levels = types, threads = threads)
@@ -762,9 +768,9 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = N
                           paste(shrunken_long$focal, shrunken_long$neighbour, shrunken_long$term,
                                 sep = "\r"))
   blocks_by_focal <- split(g5[, c("gene", "spec", "focal_mean")], as.character(g5$focal))
-  rows_or_none <- function(index, key) {
+  rows_or_none <- function(index, key, template) {
     rows <- index[[key]]
-    if (is.null(rows)) index[[1L]][0, ] else rows
+    if (is.null(rows)) template[0, , drop = FALSE] else rows
   }
 
   out <- list()
@@ -773,9 +779,9 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = N
     nc <- p[2]
     pk <- paste(fc, nc, sep = "_")
     target_term <- if (is.null(resp_term)) nc else paste0(resp_term, ":", nc)
-    s <- rows_or_none(slopes_by_pair, paste(fc, nc, target_term, sep = "\r")) |>
+    s <- rows_or_none(slopes_by_pair, paste(fc, nc, target_term, sep = "\r"), shrunken_long) |>
       dplyr::distinct(gene, .keep_all = TRUE)
-    fm <- rows_or_none(blocks_by_focal, fc) |>
+    fm <- rows_or_none(blocks_by_focal, fc, g5[, c("gene", "spec", "focal_mean")]) |>
       dplyr::distinct(gene, .keep_all = TRUE)
     if (!nrow(s) || !nrow(fm)) next
 
