@@ -675,6 +675,25 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_eta_block_cpp
+Rcpp::NumericMatrix pace_eta_block_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::NumericMatrix& b, const Rcpp::S4& z_design, const Rcpp::NumericMatrix& u, const Rcpp::IntegerVector& genes, int n_threads);
+RcppExport SEXP _PACE_pace_eta_block_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP pSEXP, SEXP bSEXP, SEXP z_designSEXP, SEXP uSEXP, SEXP genesSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type x1(x1SEXP);
+    Rcpp::traits::input_parameter< bool >::type x1_is_unit(x1_is_unitSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type x_fixed(x_fixedSEXP);
+    Rcpp::traits::input_parameter< int >::type p(pSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type b(bSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type z_design(z_designSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type u(uSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type genes(genesSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_eta_block_cpp(x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_neighbour_kernels_cpp", (DL_FUNC) &_PACE_pace_neighbour_kernels_cpp, 9},
@@ -719,6 +738,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_standardise_cpp", (DL_FUNC) &_PACE_pace_standardise_cpp, 1},
     {"_PACE_pace_anchor_mask_cpp", (DL_FUNC) &_PACE_pace_anchor_mask_cpp, 3},
     {"_PACE_pace_normalise_rows_to_max_cpp", (DL_FUNC) &_PACE_pace_normalise_rows_to_max_cpp, 1},
+    {"_PACE_pace_eta_block_cpp", (DL_FUNC) &_PACE_pace_eta_block_cpp, 9},
     {NULL, NULL, 0}
 };
 

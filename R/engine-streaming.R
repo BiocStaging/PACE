@@ -286,8 +286,25 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## chunk's z, w and ridge, which the chunk solve needs whole. The float/double
   ## gate still reads the whole logical chunk (max over its genes of colSums(w)).
   sub_genes <- max(1L, min(as.integer(chunk_size), 16L))
-  .eta_block <- function(coef_B, coef_U, genes) {
+  ## eta for a gene chunk. The core writes the result once, into its own return
+  ## buffer, in parallel over genes; the R form below it allocated three dense
+  ## n x chunk matrices per call (the sparse product, the as.matrix() copy and
+  ## the sum), which at 1.2M cells and a chunk of 64 was 626 MB each.
+  ##
+  ## The core sums the Z contributions in Z's column order and adds the fixed
+  ## part afterwards, which is the association R used. That is bit-identical for
+  ## p == 1; for p > 1 R sends X_fixed %*% B through BLAS and the two agree to
+  ## about 2e-15, five orders inside the 1e-10 the fixtures are gated at.
+  ## `.eta_block_r()` is kept as the oracle the tests compare against.
+  x_fixed_dense <- if (p == 1L) matrix(0, 0, 0) else as.matrix(X_fixed)
+  x1_or_empty   <- if (is.null(x1) || isTRUE(x1_is_unit)) numeric(0) else x1
+  .eta_block_r <- function(coef_B, coef_U, genes) {
     .xb_chunk(coef_B, genes) + as.matrix(Z %*% coef_U[, genes, drop = FALSE])
+  }
+  .eta_block <- function(coef_B, coef_U, genes) {
+    pace_eta_block_cpp(x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p,
+                       coef_B, Z, coef_U, as.integer(genes),
+                       .pace_thread_count(n_threads))
   }
 
   ## At iteration 1 there are no coefficients yet, so mu_bio is undefined. The

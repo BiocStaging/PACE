@@ -18,6 +18,7 @@
 #include "core/irls_chunk.hpp"
 #include "core/neighbourhood.hpp"
 #include "core/preprocess.hpp"
+#include "core/linear_predictor.hpp"
 #include "core/statistics.hpp"
 
 namespace {
@@ -1025,4 +1026,44 @@ Rcpp::NumericMatrix pace_normalise_rows_to_max_cpp(const Rcpp::NumericMatrix& va
   const pace::Status status = pace::normalise_rows_to_max(out_span(out), out.nrow(), out.ncol());
   raise_if_failed(status, "row normalisation");
   return out;
+}
+
+// eta for one gene chunk: X_fixed %*% B[, genes] + Z %*% U[, genes], written
+// straight into the returned matrix. Replaces the R closure .eta_block(), which
+// allocated three dense n x chunk matrices per call.
+//
+// `genes` is 1-based, as it comes from R. `x1` is used when p == 1 and may be
+// length 0 when it is all ones; `x_fixed` is the dense n x p design otherwise.
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_eta_block_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit,
+                                       const Rcpp::NumericMatrix& x_fixed, int p,
+                                       const Rcpp::NumericMatrix& b, const Rcpp::S4& z_design,
+                                       const Rcpp::NumericMatrix& u,
+                                       const Rcpp::IntegerVector& genes, int n_threads) {
+  const Rcpp::IntegerVector dims = z_design.slot("Dim");
+  const Rcpp::IntegerVector column_pointer = z_design.slot("p");
+  const Rcpp::IntegerVector row_index = z_design.slot("i");
+  const Rcpp::NumericVector values = z_design.slot("x");
+  pace::CscView z;
+  z.column_pointer = int_span(column_pointer);
+  z.row_index = int_span(row_index);
+  z.values = double_span(values);
+  z.n_rows = dims[0];
+  z.n_cols = dims[1];
+
+  const std::int64_t n = dims[0];
+  const std::int64_t n_chunk = genes.size();
+  const std::int64_t n_genes_total = b.ncol();
+
+  // R hands us 1-based gene numbers; the core works 0-based.
+  std::vector<int> genes0(static_cast<std::size_t>(n_chunk));
+  for (std::int64_t j = 0; j < n_chunk; ++j) genes0[static_cast<std::size_t>(j)] = genes[j] - 1;
+
+  Rcpp::NumericMatrix eta(n, n_chunk);
+  const pace::Status status = pace::eta_block(
+      double_span(x1), x1_is_unit, double_span(x_fixed), p, double_span(b), z,
+      double_span(u), pace::Span<const int>(genes0.data(), n_chunk), n, n_genes_total,
+      pace::Span<double>(eta.begin(), n * n_chunk), n_threads, user_interrupted);
+  raise_if_failed(status, "eta block");
+  return eta;
 }

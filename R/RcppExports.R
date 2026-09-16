@@ -169,3 +169,7 @@ pace_normalise_rows_to_max_cpp <- function(values) {
     .Call(`_PACE_pace_normalise_rows_to_max_cpp`, values)
 }
 
+pace_eta_block_cpp <- function(x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, n_threads) {
+    .Call(`_PACE_pace_eta_block_cpp`, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, n_threads)
+}
+
