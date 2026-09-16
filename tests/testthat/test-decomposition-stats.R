@@ -86,10 +86,18 @@ test_that("condition fits with an image block decompose and score identically", 
   mu_means <- t(vapply(cells_by_type, function(rows) colMeans(fit@fit$mu[rows, , drop = FALSE]),
                        numeric(ncol(fit@fit$mu))))
   dimnames(mu_means) <- list(fit@cellTypes, fit@context$genes)
-  reference <- PACE:::pace_top_drivers(fit@fit, shrunk@neighbourSlopes, pair$reference$blocks,
-                                       fit@cellTypes, mu_means, resp_term = fit@params$resp_term,
-                                       resp_dummy = fit@context$df$.resp_dummy)
+  reference <- reference_pace_top_drivers(fit@fit, shrunk@neighbourSlopes, pair$reference$blocks,
+                                          fit@cellTypes, mu_means, resp_term = fit@params$resp_term,
+                                          resp_dummy = fit@context$df$.resp_dummy)
   expect_tables_close(drivers, reference, label = "condition drivers")
+
+  # the Pratt pair attribution behind pairVariance() and plotPairHeatmap()
+  mv <- PACE:::.pace_mv_shim(shrunk)
+  for (prefix in list(NULL, fit@params$resp_term)) {
+    expect_tables_close(PACE:::pace_pair_variance_pratt(mv, cond_prefix = prefix),
+                        reference_pair_variance_pratt(mv, cond_prefix = prefix),
+                        label = paste("pratt", if (is.null(prefix)) "spatial" else prefix))
+  }
 })
 
 test_that("group covariances match stats::cov and do not depend on threads", {
@@ -97,13 +105,71 @@ test_that("group covariances match stats::cov and do not depend on threads", {
   values <- matrix(stats::rnorm(6000), 1000, 6)
   values[, 6] <- 0                     # a constant column, as after the sparse-pair drop
   group <- sample(c("a", "b", "c"), 1000, replace = TRUE)
-  one <- PACE:::.pace_group_covariances(values, group, c("a", "b", "c", "empty"), threads = 1L)
-  four <- PACE:::.pace_group_covariances(values, group, c("a", "b", "c", "empty"), threads = 4L)
+  groups <- c("a", "b", "c", "empty")
+  one <- PACE:::.pace_group_covariances(values, group, groups, threads = 1L)
+  four <- PACE:::.pace_group_covariances(values, group, groups, threads = 4L)
   expect_identical(one, four)
-  for (g in c("a", "b", "c")) {
-    expect_tables_close(one[[g]], stats::cov(values[group == g, , drop = FALSE]), label = g)
+  expect_identical(dim(one), c(6L, 6L, 4L))
+  for (g in seq_len(3)) {
+    expect_tables_close(one[, , g], stats::cov(values[group == groups[g], , drop = FALSE]),
+                        label = groups[g])
   }
-  expect_true(all(is.nan(one$empty)))
+  expect_true(all(is.nan(one[, , 4])))
+})
+
+test_that("per-group moments of a dense block match mean() and stats::var()", {
+  set.seed(11)
+  values <- matrix(stats::rnorm(800), 100, 8)
+  values[1, 1] <- NA_real_                       # na.rm = TRUE drops it
+  group <- c(rep("a", 60), rep("b", 39), "c")    # c has one cell: var is NA
+  codes <- PACE:::.pace_codes(group, c("a", "b", "c", "empty"))
+  one <- PACE:::pace_dense_group_moments_cpp(values, 100L, 8L, codes, 4L, TRUE, TRUE, 1L)
+  four <- PACE:::pace_dense_group_moments_cpp(values, 100L, 8L, codes, 4L, TRUE, TRUE, 4L)
+  expect_identical(one, four)
+  expect_true(one$any_nonzero)
+  for (g in seq_len(3)) {
+    rows <- codes == g - 1L
+    expect_tables_close(one$mean[g, ], apply(values[rows, , drop = FALSE], 2, mean, na.rm = TRUE),
+                        label = "mean")
+    expect_tables_close(one$variance[g, ],
+                        apply(values[rows, , drop = FALSE], 2, stats::var, na.rm = TRUE),
+                        label = "variance")
+  }
+  expect_true(all(is.na(one$variance[3, ])))     # one cell
+  expect_true(all(is.na(one$variance[4, ])))     # no cells
+  zero <- PACE:::pace_dense_group_moments_cpp(matrix(0, 0, 0), 100L, 8L, codes, 4L, TRUE, TRUE, 1L)
+  expect_false(zero$any_nonzero)
+  expect_true(all(zero$variance[1:2, ] == 0))
+})
+
+test_that("the solver's final-pass accumulation matches the R expressions", {
+  set.seed(5)
+  n <- 40L
+  genes <- 6L
+  eta <- matrix(stats::rnorm(n * genes, -2), n, genes)
+  ambient <- matrix(abs(stats::rnorm(n * genes)), n, genes)
+  offset <- log(stats::runif(n, 500, 2000))
+  rho <- c(0, stats::runif(n - 1L, 0, 0.3))
+  codes <- PACE:::.pace_codes(rep(c("a", "b", "c"), length.out = n), c("a", "b", "c"))
+  pass <- PACE:::pace_final_pass_statistics_cpp(eta, offset, ambient, rho, codes, 3L, TRUE)
+  mu_bio <- pmax(exp(eta + offset), 1e-6)
+  mu_spill <- pmax(ambient * rho, 0)
+  mu <- pmax(mu_bio + mu_spill, 1e-6)
+  toff <- log1p(mu_spill / mu_bio)
+  expect_identical(pass$mu, mu)
+  expect_identical(pass$toff, toff)
+  expect_true(pass$any_nonzero)
+  expect_tables_close(pass$mu_column_sum, colSums(mu), label = "column sums")
+  expect_tables_close(pass$spill_row_sum, rowSums(mu_spill), label = "spill row sums")
+  expect_tables_close(pass$total_row_sum, rowSums(mu), label = "total row sums")
+  for (g in seq_len(3)) {
+    rows <- codes == g - 1L
+    expect_tables_close(pass$mu_group_sum[g, ], colSums(mu[rows, , drop = FALSE]), label = "group sums")
+    expect_tables_close(pass$toff_variance[g, ],
+                        apply(toff[rows, , drop = FALSE], 2, stats::var), label = "offset variance")
+  }
+  expect_error(PACE:::pace_final_pass_statistics_cpp(replace(eta, 1, NA_real_), offset, ambient, rho,
+                                                     codes, 3L, FALSE), "finite")
 })
 
 test_that("single-frame statistics match the dense computation and do not depend on threads", {

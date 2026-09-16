@@ -113,3 +113,171 @@ expect_tables_close <- function(new, reference, tol_rel = 1e-10, tol_abs_scale =
   }
   expect_identical(new, reference, label = label)
 }
+
+# The f55d976 driver-score loop (R/pace-core.R), kept verbatim as the reference
+# for the compiled driver scores. Only the function name changed.
+reference_pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = NULL,
+                             resp_term = NULL, resp_dummy = NULL) {
+  ## default: every ordered focal != neighbour pair (a chosen subset is only a
+  ## reporting convenience, not part of the method).
+  if (is.null(pairs)) {
+    pairs <- list()
+    for (fc in types) for (nc in types) if (fc != nc) pairs <- c(pairs, list(c(fc, nc)))
+  }
+  g5 <- dec$gene_focal_5block
+  Z_re <- fit$re_meta$Z
+  cells_by_ct <- lapply(types, function(c) which(Z_re[, paste0(c, "::(Intercept)")] != 0))
+  names(cells_by_ct) <- types
+  alpha_g <- pmax(fit$alpha, 0)
+  gene_names_fit <- colnames(fit$U)
+
+  out <- list()
+  for (p in pairs) {
+    fc <- p[1]
+    nc <- p[2]
+    pk <- paste(fc, nc, sep = "_")
+    target_term <- if (is.null(resp_term)) nc else paste0(resp_term, ":", nc)
+    s <- shrunken_long |>
+      dplyr::filter(focal == fc, neighbour == nc, term == target_term) |>
+      dplyr::distinct(gene, .keep_all = TRUE)
+    fm <- g5 |>
+      dplyr::filter(focal == fc) |>
+      dplyr::select(gene, spec, focal_mean) |>
+      dplyr::distinct(gene, .keep_all = TRUE)
+    if (!nrow(s) || !nrow(fm)) next
+
+    cells_c <- cells_by_ct[[fc]]
+    col_N <- paste0(fc, "::", nc)
+    if (!col_N %in% colnames(Z_re)) {
+      out[[pk]] <- list(scores = s[0, ], status = "dropped (n_eff)",
+                        expected_false_sign = 0, false_sign_rate = NA_real_)
+      next
+    }
+    N_t <- as.numeric(Z_re[cells_c, col_N])
+    var_N <- stats::var(N_t, na.rm = TRUE)
+    mu_bar_per_gene <- mu_means[fc, ]
+    names(alpha_g) <- gene_names_fit
+    names(mu_bar_per_gene) <- gene_names_fit
+
+    base <- s |>
+      dplyr::inner_join(fm, by = "gene") |>
+      dplyr::mutate(
+        MCSD    = (estimate_shrunk^2) * (spec^2) * pmax(focal_mean, 0),
+        MCSD4   = (estimate_shrunk^2) * (spec^4) * pmax(focal_mean, 0),
+        mu_bar  = mu_bar_per_gene[gene],
+        alpha   = alpha_g[gene],
+        V_resid = log(1 + (1 + pmax(alpha, 0)) / pmax(mu_bar, 1e-6)))
+    if (is.null(resp_term)) {
+      ## baseline neighbour effect only (no condition).
+      res_all <- base |>
+        dplyr::mutate(V_S = estimate_shrunk^2 * var_N,
+                      V_total = V_S + V_resid,
+                      R2_S = V_S / pmax(V_total, 1e-12))
+      res <- res_all |>
+        dplyr::filter(lfsr < 0.05) |>
+        dplyr::arrange(dplyr::desc(MCSD)) |>
+        dplyr::mutate(rank = dplyr::row_number()) |>
+        dplyr::rename(b_clean = estimate_shrunk) |>
+        dplyr::select(rank, gene, MCSD, MCSD4, b_clean, spec, focal_mean,
+                      R2_S, mu_bar, alpha, V_S, V_resid, V_total, lfsr, sd_shrunk)
+    } else {
+      ## condition x spatial: baseline slope V_S (from the raw BLUP u) plus the
+      ## condition-interaction slope V_RxS (from the shrunken estimate).
+      col_R <- match(paste0(fc, "::", resp_term), colnames(Z_re))
+      R_c <- if (is.na(col_R)) {
+        if (is.null(resp_dummy)) rep(0, length(cells_c)) else resp_dummy[cells_c]
+      } else as.numeric(Z_re[cells_c, col_R])
+      var_RN <- stats::var(R_c * N_t, na.rm = TRUE)
+      row_u <- match(col_N, rownames(fit$U))
+      u_vec <- if (is.na(row_u))
+        setNames(rep(0, length(gene_names_fit)), gene_names_fit)
+      else setNames(as.numeric(fit$U[row_u, ]), gene_names_fit)
+      res_all <- base |>
+        dplyr::mutate(u_raw   = u_vec[gene],
+                      V_S     = u_raw^2 * var_N,
+                      V_RxS   = estimate_shrunk^2 * var_RN,
+                      V_total = V_S + V_RxS + V_resid,
+                      R2_S    = V_S   / pmax(V_total, 1e-12),
+                      R2_RxS  = V_RxS / pmax(V_total, 1e-12))
+      res <- res_all |>
+        dplyr::filter(lfsr < 0.05) |>
+        dplyr::arrange(dplyr::desc(MCSD)) |>
+        dplyr::mutate(rank = dplyr::row_number()) |>
+        dplyr::rename(b_clean = estimate_shrunk) |>
+        dplyr::select(rank, gene, MCSD, MCSD4, b_clean, u_raw, spec, focal_mean,
+                      R2_S, R2_RxS, mu_bar, alpha, V_S, V_RxS, V_resid, V_total,
+                      lfsr, sd_shrunk)
+    }
+    status <- if (nrow(res) >= 3) "significant" else "honestly null"
+    ## how many of this pair's calls are expected to have the wrong sign
+    fsr <- PACE:::expected_false_sign(res$lfsr)
+    out[[pk]] <- list(scores = res, status = status,
+                      expected_false_sign = fsr$expected_false_sign,
+                      false_sign_rate = fsr$false_sign_rate)
+  }
+  out
+}
+
+# The f55d976 Pratt pair attribution (R/plots.R), kept verbatim as the reference
+# for the compiled attribution. Only the function name changed.
+reference_pair_variance_pratt <- function(mv, cond_prefix = NULL, focals = NULL,
+                                     cohort_label = "cohort", block_label = NULL) {
+  fit <- mv$fit
+  Z <- fit$re_meta$Z
+  gn <- mv$gene_set
+  colnames(fit$U) <- gn
+  TYPES <- if (!is.null(fit$re_meta$blocks))
+             fit$re_meta$blocks[[1]]$group_levels
+           else fit$re_meta$group_levels
+  if (is.null(focals)) focals <- TYPES
+  if (is.null(block_label))
+    block_label <- if (is.null(cond_prefix)) "Spatial" else "RxS"
+
+  pair_rows <- list()
+  focal_rows <- list()
+
+  for (fc in focals) {
+    fc_int <- paste0(fc, "::(Intercept)")
+    if (!(fc_int %in% colnames(Z))) next
+    cells <- which(as.numeric(Z[, fc_int]) != 0)
+    if (length(cells) < 50) next
+    term_names <- if (is.null(cond_prefix))
+                    paste0(fc, "::", TYPES)
+                  else paste0(fc, "::", cond_prefix, ":", TYPES)
+    keep <- term_names %in% colnames(Z) & term_names %in% rownames(fit$U)
+    if (!any(keep)) next
+    tn <- term_names[keep]
+    tt <- TYPES[keep]
+    Z_fc <- as.matrix(Z[cells, tn, drop = FALSE])
+    Sigma_K <- stats::cov(Z_fc)
+    U_c <- as.matrix(fit$U[tn, , drop = FALSE]); U_c[!is.finite(U_c)] <- 0
+    SU <- Sigma_K %*% U_c
+    V_pair_gene <- U_c * SU
+    V_pair_t <- as.numeric(rowSums(V_pair_gene))
+    V_pratt_total <- sum(V_pair_t)
+    V_diag_t <- as.numeric(rowSums(U_c^2) * diag(Sigma_K))
+    V_diag_total <- sum(V_diag_t)
+
+    for (i in seq_along(tt)) {
+      pair_rows[[length(pair_rows) + 1]] <- data.frame(
+        cohort = cohort_label, block = block_label,
+        focal = fc, neighbour = tt[i],
+        V_pair_pratt = V_pair_t[i],
+        V_pair_diag  = V_diag_t[i],
+        within_focal_share_pct = 100 * V_pair_t[i] / V_pratt_total,
+        within_focal_diag_pct  = 100 * V_diag_t[i] / V_diag_total,
+        sign = sign(V_pair_t[i]),
+        stringsAsFactors = FALSE)
+    }
+    focal_rows[[length(focal_rows) + 1]] <- data.frame(
+      cohort = cohort_label, block = block_label, focal = fc,
+      n_cells = length(cells),
+      V_block_pratt = V_pratt_total,
+      V_block_diag  = V_diag_total,
+      cross_cov_pct = 100 * (V_pratt_total - V_diag_total) / V_pratt_total,
+      n_negative_pairs = sum(V_pair_t < 0),
+      stringsAsFactors = FALSE)
+  }
+  list(pair_long = do.call(rbind, pair_rows),
+       focal_summary = do.call(rbind, focal_rows))
+}
