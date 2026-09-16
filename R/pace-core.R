@@ -191,25 +191,14 @@ pace_neighbour_kernel <- function(coords, celltype, types, h_bio, h_tech, eps,
 ## column's effective sample size n_eff = sum(Kc^2) / max(Kc^2) < neff_min.
 ## ----------------------------------------------------------------------------
 pace_drop_sparse_k <- function(K_bio, celltype, types, neff_min, verbose = TRUE) {
-  n_dropped <- 0L
-  for (focal in types) {
-    cells_f <- which(celltype == focal)
-    if (!length(cells_f)) next
-    for (nb in types) {
-      vals <- K_bio[cells_f, nb]
-      centred <- vals - mean(vals, na.rm = TRUE)
-      max_sq <- max(centred^2, na.rm = TRUE)
-      n_eff <- if (max_sq > 0) sum(centred^2, na.rm = TRUE) / max_sq else 0
-      if (n_eff < neff_min) {
-        K_bio[cells_f, nb] <- 0
-        n_dropped <- n_dropped + 1L
-      }
-    }
-  }
+  dropped <- pace_drop_sparse_kernel_cpp(K_bio, .pace_codes(as.character(celltype), types),
+                                         neff_min)
   if (verbose)
     message(sprintf("    drop_sparse_k: zeroed %d (focal, neighbour) pairs with n_eff < %g",
-                    n_dropped, neff_min))
-  K_bio
+                    as.integer(dropped$n_dropped), neff_min))
+  out <- dropped$kernel
+  dimnames(out) <- dimnames(K_bio)
+  out
 }
 
 ## ----------------------------------------------------------------------------
@@ -217,11 +206,12 @@ pace_drop_sparse_k <- function(K_bio, celltype, types, neff_min, verbose = TRUE)
 ## random slopes are estimated on the within-group deviation only.
 ## ----------------------------------------------------------------------------
 pace_center_within_image <- function(K_bio, celltype, image, types) {
-  for (tc in types) {
-    col <- K_bio[, tc]
-    K_bio[, tc] <- col - stats::ave(col, image, celltype, FUN = mean)
-  }
-  K_bio
+  image_levels <- unique(as.character(image))
+  out <- pace_centre_within_groups_cpp(K_bio, .pace_codes(as.character(image), image_levels),
+                                       .pace_codes(as.character(celltype), types),
+                                       length(image_levels), length(types))
+  dimnames(out) <- dimnames(K_bio)
+  out
 }
 
 ## ----------------------------------------------------------------------------
@@ -269,19 +259,10 @@ pace_anchors <- function(coords, Y, celltype, image, types,
   for (ti in seq_along(types)) {
     if (core_sizes[ti] >= 20) core_means[ti, ] <- core_group_means[ti, ]
   }
-  owner_mean <- apply(core_means, 2, max)
-  owner_t    <- types[apply(core_means, 2, which.max)]
-
-  mask <- matrix(0, length(types), ncol(Y), dimnames = list(types, colnames(Y)))
-  n_anchor <- integer(0)
-  for (ti in seq_along(types)) {
-    X <- types[ti]
-    is_anchor <- owner_t != X &
-                 owner_mean > owner_thresh &
-                 (core_means[X, ] / pmax(owner_mean, 1e-9) < core_thresh)
-    mask[ti, ] <- as.numeric(is_anchor)
-    n_anchor <- c(n_anchor, sum(is_anchor))
-  }
+  anchored <- pace_anchor_mask_cpp(core_means, owner_thresh, core_thresh)
+  mask <- anchored$mask
+  dimnames(mask) <- list(types, colnames(Y))
+  n_anchor <- anchored$n_anchor
   if (verbose)
     message(sprintf("    anchors: homotypic-core cells %d/%d; anchors/type median=%d range=[%d,%d]",
                     length(core), n, as.integer(stats::median(n_anchor)),
@@ -579,16 +560,17 @@ pace_fit_streaming <- function(Y, df, types = NULL,
     ## focal by the sparse-pair drop) has zero SD: scale() returns NaN for every
     ## cell and model.matrix() then drops all rows. It carries no slope to
     ## estimate, so it is left out of the image-slope terms.
-    varying <- vapply(types, function(tc) {
-      col_sd <- stats::sd(df[[tc]])
-      is.finite(col_sd) && col_sd > 0
-    }, logical(1))
+    ## scale() centres by the column mean and divides by the root mean square of
+    ## the centred column; a column with no spread carries no slope to estimate.
+    standardised <- lapply(types, function(tc) pace_standardise_cpp(df[[tc]]))
+    names(standardised) <- types
+    varying <- vapply(standardised, function(z) is.finite(z$sd) && z$sd > 0, logical(1))
     if (image_re != "intercept" && any(!varying) && verbose)
       message("    image_re: no image slope for constant kernel column(s) ",
               paste(types[!varying], collapse = ", "))
     ## sprintf(), not paste0(): paste0() turns an empty input into "_imgz"
     imgz <- sprintf("%s_imgz", types[varying])
-    for (tc in types[varying]) df[[paste0(tc, "_imgz")]] <- as.numeric(scale(df[[tc]]))
+    for (tc in types[varying]) df[[paste0(tc, "_imgz")]] <- standardised[[tc]]$values
     img_rhs <- switch(image_re,
       intercept        = "1",
       slopes           = paste(c("1", imgz), collapse = " + "),

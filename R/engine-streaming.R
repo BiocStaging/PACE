@@ -272,14 +272,6 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     }
   }
 
-  ## ---- SPEED 2: forked parallel param for the alpha-MLE step ONLY. The alpha
-  ## MLE is embarrassingly parallel over genes and deterministic, so forking
-  ## across n_threads workers is exact. All OTHER bplapply calls keep the passed
-  ## BPPARAM. MulticoreParam forks (Linux + macOS); fall back to BPPARAM serial.
-  alpha_PARAM <- if (n_threads > 1L)
-    BiocParallel::MulticoreParam(workers = n_threads)
-  else BPPARAM
-
   ## The anchor mask as the core reads it: either n_types x G with a per-cell
   ## type index, or n x G with none. An empty matrix means no masking.
   mask_matrix <- if (is.null(percell_anchor_mask)) matrix(0, 0, 0) else percell_anchor_mask
@@ -563,20 +555,18 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     for (cs in chk_starts) {
       gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
       eta_chk <- .eta_block(B, U, gene_idx_chk)
-      first_gene <- gene_idx_chk[1L]
-      ## SPEED 2: alpha MLE on the FORKED param (deterministic per gene). Each
-      ## gene's fitted mean is rebuilt in C++ from that gene's column alone.
-      ## One fork round per chunk, not per gene: forking is what this costs.
-      a_list <- BiocParallel::bplapply(seq_along(gene_idx_chk),
-                  function(k) {
-                    column <- pace_fitted_mean_column_cpp(eta_chk[, k], Y, a_cache, first_gene,
-                                                          k, offset_vec, add_rho)
-                    if (disp_nb2) .alpha_nb2_mle(column$y, column$mu, max_n = alpha_max_n)
-                    else          .alpha_nb1_mle(column$y, column$mu, max_n = alpha_max_n,
-                                                 zero_collapse = alpha_zero_collapse)
-                  }, BPPARAM = alpha_PARAM)
-      alpha_new[gene_idx_chk] <- unlist(a_list, use.names = FALSE)
-      rm(eta_chk, a_list)
+      ## pace::dispersion_chunk: each gene's fitted mean is rebuilt from its own
+      ## column and its dispersion minimised over log alpha, on the core's
+      ## threads. No process forking, and the per-gene work never leaves C++.
+      fitted <- pace_dispersion_chunk_cpp(eta_chk, Y, a_cache, gene_idx_chk[1L], offset_vec,
+                                          add_rho, disp_nb2, alpha_zero_collapse, alpha_max_n,
+                                          .pace_thread_count(n_threads))
+      if (fitted$n_noninteger > 0)
+        warning(sprintf("iter %d: %.0f gene(s) have counts that are not whole numbers; their ",
+                        it, fitted$n_noninteger),
+                "dispersion is undefined and keeps its previous value.", call. = FALSE)
+      alpha_new[gene_idx_chk] <- fitted$alpha
+      rm(eta_chk, fitted)
     }
     alpha <- alpha_new
     alpha[!is.finite(alpha)] <- prev_alpha[!is.finite(alpha)]

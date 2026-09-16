@@ -137,3 +137,35 @@ pace_solve_genes_chunk_cpp <- function(x_fixed, w, z, lam_diag, q_total, blocks,
     .Call(`_PACE_pace_solve_genes_chunk_cpp`, x_fixed, w, z, lam_diag, q_total, blocks, terms_list, cells_by_group_list, cell_group_list, single_precision, n_threads)
 }
 
+pace_dispersion_chunk_cpp <- function(eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, n_threads) {
+    .Call(`_PACE_pace_dispersion_chunk_cpp`, eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, n_threads)
+}
+
+pace_dispersion_mle_cpp <- function(counts, mu, nb2, zero_collapse, max_cells) {
+    .Call(`_PACE_pace_dispersion_mle_cpp`, counts, mu, nb2, zero_collapse, max_cells)
+}
+
+pace_estimate_d0_cpp <- function(log_variance, n_used, d0_max) {
+    .Call(`_PACE_pace_estimate_d0_cpp`, log_variance, n_used, d0_max)
+}
+
+pace_drop_sparse_kernel_cpp <- function(kernel, celltype, min_effective) {
+    .Call(`_PACE_pace_drop_sparse_kernel_cpp`, kernel, celltype, min_effective)
+}
+
+pace_centre_within_groups_cpp <- function(kernel, image, celltype, n_images, n_celltypes) {
+    .Call(`_PACE_pace_centre_within_groups_cpp`, kernel, image, celltype, n_images, n_celltypes)
+}
+
+pace_standardise_cpp <- function(values) {
+    .Call(`_PACE_pace_standardise_cpp`, values)
+}
+
+pace_anchor_mask_cpp <- function(core_means, owner_threshold, core_threshold) {
+    .Call(`_PACE_pace_anchor_mask_cpp`, core_means, owner_threshold, core_threshold)
+}
+
+pace_normalise_rows_to_max_cpp <- function(values) {
+    .Call(`_PACE_pace_normalise_rows_to_max_cpp`, values)
+}
+

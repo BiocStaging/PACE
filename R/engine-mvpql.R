@@ -184,23 +184,16 @@ build_random_design_multi <- function(df, re_specs) {
 # (pace::tau_eb_summaries); the root-find stays here because it is R's own
 # trigamma() and uniroot().
 .estimate_d0_from <- function(v_obs, n_used, d_g = 1, d0_max = 5) {
-  if (n_used < 5L || !is.finite(v_obs)) return(d0_max)
-  excess <- v_obs - trigamma(d_g / 2)
-  ## When excess <= 0, the strict marginal-MLE says all variability is
-  ## sampling noise (d_0 = Inf). For BLUPs from a strongly-shrunk fit this
-  ## happens by construction in early iters: per-gene BLUP variance is
-  ## artificially compressed by the prior, so cross-gene log-variance is
-  ## small. We cap d_0 at d0_max instead so adaptive shrinkage always
-  ## allows some per-gene variation -- otherwise we never escape the
-  ## "everything = panel" fixed point.
-  if (excess <= 0) return(d0_max)
-  res <- tryCatch(
-    stats::uniroot(function(x) trigamma(x) - excess,
-                   lower = 1e-4, upper = 1e4)$root,
-    error = function(e) NA_real_
-  )
-  if (!is.finite(res)) return(d0_max)
-  min(2 * res, d0_max)
+  ## pace::estimate_d0: excess = var(log s2) - trigamma(d_g / 2), then the root
+  ## of trigamma(x) = excess by Brent's method, doubled and capped.
+  ##
+  ## When excess <= 0 the strict marginal MLE says all the variability is
+  ## sampling noise (d_0 = Inf). For BLUPs from a strongly shrunk fit that
+  ## happens by construction in the early iterations, so d_0 is capped at
+  ## d0_max instead and adaptive shrinkage always allows some per-gene
+  ## variation; otherwise the fit never escapes "everything = panel".
+  stopifnot(d_g == 1)
+  pace_estimate_d0_cpp(as.numeric(v_obs), as.numeric(n_used), as.numeric(d0_max))
 }
 
 
@@ -320,13 +313,8 @@ build_random_design_multi <- function(df, re_specs) {
     }
   }
   ## Normalise K_var per focal to [0, 1] so the weighting is scale-free across focals
-  K_var_norm <- K_var
-  for (f in focals) {
-    kv <- K_var_norm[f, ]
-    mx <- max(kv, na.rm = TRUE)
-    K_var_norm[f, ] <- if (is.finite(mx) && mx > 0) pmin(kv / mx, 1) else 0
-  }
-  K_var_norm[is.na(K_var_norm)] <- 0
+  K_var_norm <- pace_normalise_rows_to_max_cpp(K_var)
+  dimnames(K_var_norm) <- dimnames(K_var)
 
   ## Walk through each random-effect block and record, for every random-effect
   ## column, which focal's detection profile it takes and how its neighbour's
@@ -472,81 +460,28 @@ build_random_design_multi <- function(df, re_specs) {
   out
 }
 
-# NB1 MLE for the dispersion alpha given fitted mu and counts y.
+# NB1 and NB2 MLEs for the dispersion alpha given fitted mu and counts y.
 #
-# Reliable replacement for the Pearson moment estimator, which collapses
-# to ~0 under PQL when the working response makes mu ~= y by construction.
+# Reliable replacement for the Pearson moment estimator, which collapses to ~0
+# under PQL when the working response makes mu ~= y by construction. Both are
+# pace::dispersion_mle: Brent's minimiser over log alpha, with the negative
+# binomial density in its mean parameterisation (NB1 takes size = mu / alpha,
+# NB2 the constant size = 1 / alpha).
+#
+# `max_n` subsamples evenly for speed. NB1 dispersion is well determined from
+# ~10k cells, but alpha differences propagate through the PQL weights into the
+# mashr and MCSD ranking, so the default Inf is what preserves the manuscript.
+#
+# `zero_collapse` sums the zero-count cells in closed form (exact algebra,
+# reassociated, so alpha moves in its last digits); see the design note.
 .alpha_nb1_mle <- function(y, mu, max_n = Inf, zero_collapse = FALSE) {
-  y  <- as.numeric(y)
-  mu <- as.numeric(mu)
-  ok <- is.finite(mu) & mu > 1e-8
-  if (sum(ok) < 10) return(NA_real_)
-  y  <- y[ok]; mu <- mu[ok]
-  ## Optional subsampling for speed: NB1 dispersion is well-determined from
-  ## ~10k cells, and dnbinom at panel scale (>100k) is ~25% of total fit
-  ## time. BUT: alpha differences propagate through PQL weights into
-  ## downstream mashr/MCSD ranking, which can shift top-driver picks at
-  ## the margins (BC: ~10% rel alpha drift -> ~30% rel B drift). Default
-  ## Inf preserves manuscript reproducibility; user can opt in to a finite
-  ## max_n via fit_pace_mvpql{,_multi}(alpha_max_n=...) for fast iteration.
-  if (length(y) > max_n) {
-    keep <- seq.int(1L, length(y), length.out = max_n)
-    y <- y[keep]; mu <- mu[keep]
-  }
-  ## `zero_collapse` is D4 of the performance plan. Under NB1 the size is mu / a,
-  ## so a cell with y = 0 contributes
-  ##   log dnbinom(0; mu/a, mu) = (mu/a) log(1 / (1 + a)) = -(mu/a) log1p(a),
-  ## which depends on the cell only through mu. The whole zero block is then one
-  ## term, -log1p(a) / a * sum(mu over the zero cells), and dnbinom is evaluated
-  ## only on the non-zero counts (a fifth of them on a targeted panel).
-  ## Algebraically exact, but the sum is reassociated, so the optimiser lands a
-  ## few digits away and the fit moves with it: OFF by default, with the measured
-  ## effect recorded in the design note.
-  nll <- if (zero_collapse) {
-    is_zero     <- y == 0
-    mu_zero_sum <- sum(mu[is_zero])
-    y_nonzero   <- y[!is_zero]
-    mu_nonzero  <- mu[!is_zero]
-    function(log_alpha) {
-      a <- exp(log_alpha)
-      -(sum(stats::dnbinom(y_nonzero, size = mu_nonzero / a, mu = mu_nonzero, log = TRUE)) -
-        mu_zero_sum * log1p(a) / a)
-    }
-  } else {
-    function(log_alpha) {
-      a <- exp(log_alpha)
-      -sum(stats::dnbinom(y, size = mu / a, mu = mu, log = TRUE))
-    }
-  }
-  opt <- tryCatch(stats::optimize(nll, interval = c(-6, 4)),
-                  error = function(e) NULL)
-  if (is.null(opt)) NA_real_ else exp(opt$minimum)
+  pace_dispersion_mle_cpp(as.numeric(y), as.numeric(mu), nb2 = FALSE,
+                          zero_collapse = zero_collapse, max_cells = max_n)
 }
 
-
-# NB2 (quadratic) dispersion MLE
-#
-# Identical machinery to .alpha_nb1_mle but with the NB2 mean-variance link:
-# Var = mu + alpha*mu^2 = mu(1 + alpha*mu), i.e. constant size theta = 1/alpha
-# in dnbinom (vs NB1's size = mu/alpha). Returns alpha (= 1/theta) on the same
-# scale the NB2 IRLS weight mu/(1+alpha*mu) expects. Used when R_DISP_MODEL=nb2.
 .alpha_nb2_mle <- function(y, mu, max_n = Inf) {
-  y  <- as.numeric(y)
-  mu <- as.numeric(mu)
-  ok <- is.finite(mu) & mu > 1e-8
-  if (sum(ok) < 10) return(NA_real_)
-  y  <- y[ok]; mu <- mu[ok]
-  if (length(y) > max_n) {
-    keep <- seq.int(1L, length(y), length.out = max_n)
-    y <- y[keep]; mu <- mu[keep]
-  }
-  nll <- function(log_alpha) {
-    a <- exp(log_alpha)
-    -sum(stats::dnbinom(y, size = 1 / a, mu = mu, log = TRUE))   # NB2: constant size = 1/alpha
-  }
-  opt <- tryCatch(stats::optimize(nll, interval = c(-6, 4)),
-                  error = function(e) NULL)
-  if (is.null(opt)) NA_real_ else exp(opt$minimum)
+  pace_dispersion_mle_cpp(as.numeric(y), as.numeric(mu), nb2 = TRUE,
+                          zero_collapse = FALSE, max_cells = max_n)
 }
 
 

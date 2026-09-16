@@ -4,6 +4,7 @@
 // allocates R outputs on the main thread, (3) supplies the interrupt check, and
 // (4) turns a core Status into an R error or interrupt. No computation lives here.
 #include <Rcpp.h>
+#include <Rmath.h>
 
 #include <cstdint>
 #include <string>
@@ -11,10 +12,12 @@
 #include "core/count_stats.hpp"
 #include "core/core_types.hpp"
 #include "core/decomposition.hpp"
+#include "core/dispersion.hpp"
 #include "core/gene_solve.hpp"
 #include "core/hyperparameters.hpp"
 #include "core/irls_chunk.hpp"
 #include "core/neighbourhood.hpp"
+#include "core/preprocess.hpp"
 #include "core/statistics.hpp"
 
 namespace {
@@ -906,4 +909,120 @@ Rcpp::List pace_solve_genes_chunk_cpp(const Rcpp::NumericMatrix& x_fixed,
   raise_if_failed(status, "gene solve");
   return Rcpp::List::create(Rcpp::Named("B") = beta, Rcpp::Named("U") = u,
                             Rcpp::Named("Ainv_diag") = ainv_diag);
+}
+
+// ---------------------------------------------------------------------------
+// The dispersion MLE and the prior degrees of freedom (see core/dispersion.hpp).
+// The core owns the optimisers and the likelihood; the two elementary special
+// functions are R's own, passed in, so the numbers are identical to the
+// optimize()/dnbinom() and uniroot()/trigamma() calls they replace while the
+// core keeps no R dependency of its own.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+double r_log_nbinom(double x, double size, double mu) { return Rf_dnbinom_mu(x, size, mu, 1); }
+
+double r_trigamma(double x) { return Rf_trigamma(x); }
+
+}  // namespace
+
+// [[Rcpp::export]]
+Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::S4& counts,
+                                     const Rcpp::S4& ambient, int first_gene,
+                                     const Rcpp::NumericVector& offset,
+                                     const Rcpp::NumericVector& rho, bool nb2,
+                                     bool zero_collapse, double max_cells, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const std::int64_t n = eta.nrow();
+  const std::int64_t n_genes = eta.ncol();
+  Rcpp::NumericVector alpha(n_genes);
+  std::int64_t n_noninteger = 0;
+  const pace::Status status = pace::dispersion_chunk(
+      const_span(eta), gene_block(count_holder, first_gene), gene_block(ambient_holder, first_gene),
+      double_span(offset), double_span(rho), nb2, zero_collapse, max_cells, r_log_nbinom, n,
+      n_genes, out_span(alpha), &n_noninteger, n_threads, user_interrupted);
+  raise_if_failed(status, "dispersion");
+  for (R_xlen_t j = 0; j < alpha.size(); ++j) {
+    if (ISNAN(alpha[j])) alpha[j] = NA_REAL;
+  }
+  return Rcpp::List::create(Rcpp::Named("alpha") = alpha,
+                            Rcpp::Named("n_noninteger") = static_cast<double>(n_noninteger));
+}
+
+// The same MLE for one gene, from its counts and fitted means.
+// [[Rcpp::export]]
+double pace_dispersion_mle_cpp(const Rcpp::NumericVector& counts, const Rcpp::NumericVector& mu,
+                               bool nb2, bool zero_collapse, double max_cells) {
+  const double alpha = pace::dispersion_mle(double_span(counts), double_span(mu), nb2,
+                                            zero_collapse, max_cells, r_log_nbinom);
+  return ISNAN(alpha) ? NA_REAL : alpha;
+}
+
+// The prior degrees of freedom of the adaptive tau shrinkage.
+// [[Rcpp::export]]
+double pace_estimate_d0_cpp(double log_variance, double n_used, double d0_max) {
+  return pace::estimate_d0(log_variance, static_cast<std::int64_t>(n_used), d0_max, r_trigamma);
+}
+
+// ---------------------------------------------------------------------------
+// The kernel preprocessing and the anchor decision (see core/preprocess.hpp).
+// Each returns a modified copy so the caller's matrix is left alone.
+// ---------------------------------------------------------------------------
+
+// [[Rcpp::export]]
+Rcpp::List pace_drop_sparse_kernel_cpp(const Rcpp::NumericMatrix& kernel,
+                                       const Rcpp::IntegerVector& celltype, double min_effective) {
+  Rcpp::NumericMatrix out(Rcpp::clone(kernel));
+  std::int64_t n_dropped = 0;
+  const pace::Status status = pace::drop_sparse_kernel(out_span(out), out.nrow(), out.ncol(),
+                                                       int_span(celltype), min_effective,
+                                                       &n_dropped);
+  raise_if_failed(status, "kernel support");
+  return Rcpp::List::create(Rcpp::Named("kernel") = out,
+                            Rcpp::Named("n_dropped") = static_cast<double>(n_dropped));
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_centre_within_groups_cpp(const Rcpp::NumericMatrix& kernel,
+                                                  const Rcpp::IntegerVector& image,
+                                                  const Rcpp::IntegerVector& celltype,
+                                                  int n_images, int n_celltypes) {
+  Rcpp::NumericMatrix out(Rcpp::clone(kernel));
+  const pace::Status status = pace::centre_within_groups(out_span(out), out.nrow(), out.ncol(),
+                                                          int_span(image), int_span(celltype),
+                                                          n_images, n_celltypes);
+  raise_if_failed(status, "within-group centring");
+  return out;
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_standardise_cpp(const Rcpp::NumericVector& values) {
+  Rcpp::NumericVector out(Rcpp::clone(values));
+  double spread = 0;
+  const pace::Status status = pace::standardise_column(out_span(out), out.size(), &spread);
+  raise_if_failed(status, "standardise");
+  return Rcpp::List::create(Rcpp::Named("values") = out, Rcpp::Named("sd") = spread);
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_anchor_mask_cpp(const Rcpp::NumericMatrix& core_means, double owner_threshold,
+                                double core_threshold) {
+  Rcpp::NumericMatrix mask(core_means.nrow(), core_means.ncol());
+  Rcpp::IntegerVector n_anchor(core_means.nrow());
+  const pace::Status status = pace::anchor_mask(const_span(core_means), core_means.nrow(),
+                                                 core_means.ncol(), owner_threshold,
+                                                 core_threshold, out_span(mask),
+                                                 out_span(n_anchor));
+  raise_if_failed(status, "anchor mask");
+  return Rcpp::List::create(Rcpp::Named("mask") = mask, Rcpp::Named("n_anchor") = n_anchor);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_normalise_rows_to_max_cpp(const Rcpp::NumericMatrix& values) {
+  Rcpp::NumericMatrix out(Rcpp::clone(values));
+  const pace::Status status = pace::normalise_rows_to_max(out_span(out), out.nrow(), out.ncol());
+  raise_if_failed(status, "row normalisation");
+  return out;
 }

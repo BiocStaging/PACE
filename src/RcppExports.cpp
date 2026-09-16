@@ -564,6 +564,117 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_dispersion_chunk_cpp
+Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, bool nb2, bool zero_collapse, double max_cells, int n_threads);
+RcppExport SEXP _PACE_pace_dispersion_chunk_cpp(SEXP etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type eta(etaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< int >::type first_gene(first_geneSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
+    Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
+    Rcpp::traits::input_parameter< bool >::type zero_collapse(zero_collapseSEXP);
+    Rcpp::traits::input_parameter< double >::type max_cells(max_cellsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_dispersion_chunk_cpp(eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_dispersion_mle_cpp
+double pace_dispersion_mle_cpp(const Rcpp::NumericVector& counts, const Rcpp::NumericVector& mu, bool nb2, bool zero_collapse, double max_cells);
+RcppExport SEXP _PACE_pace_dispersion_mle_cpp(SEXP countsSEXP, SEXP muSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type mu(muSEXP);
+    Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
+    Rcpp::traits::input_parameter< bool >::type zero_collapse(zero_collapseSEXP);
+    Rcpp::traits::input_parameter< double >::type max_cells(max_cellsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_dispersion_mle_cpp(counts, mu, nb2, zero_collapse, max_cells));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_estimate_d0_cpp
+double pace_estimate_d0_cpp(double log_variance, double n_used, double d0_max);
+RcppExport SEXP _PACE_pace_estimate_d0_cpp(SEXP log_varianceSEXP, SEXP n_usedSEXP, SEXP d0_maxSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< double >::type log_variance(log_varianceSEXP);
+    Rcpp::traits::input_parameter< double >::type n_used(n_usedSEXP);
+    Rcpp::traits::input_parameter< double >::type d0_max(d0_maxSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_estimate_d0_cpp(log_variance, n_used, d0_max));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_drop_sparse_kernel_cpp
+Rcpp::List pace_drop_sparse_kernel_cpp(const Rcpp::NumericMatrix& kernel, const Rcpp::IntegerVector& celltype, double min_effective);
+RcppExport SEXP _PACE_pace_drop_sparse_kernel_cpp(SEXP kernelSEXP, SEXP celltypeSEXP, SEXP min_effectiveSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type kernel(kernelSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type celltype(celltypeSEXP);
+    Rcpp::traits::input_parameter< double >::type min_effective(min_effectiveSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_drop_sparse_kernel_cpp(kernel, celltype, min_effective));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_centre_within_groups_cpp
+Rcpp::NumericMatrix pace_centre_within_groups_cpp(const Rcpp::NumericMatrix& kernel, const Rcpp::IntegerVector& image, const Rcpp::IntegerVector& celltype, int n_images, int n_celltypes);
+RcppExport SEXP _PACE_pace_centre_within_groups_cpp(SEXP kernelSEXP, SEXP imageSEXP, SEXP celltypeSEXP, SEXP n_imagesSEXP, SEXP n_celltypesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type kernel(kernelSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type image(imageSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type celltype(celltypeSEXP);
+    Rcpp::traits::input_parameter< int >::type n_images(n_imagesSEXP);
+    Rcpp::traits::input_parameter< int >::type n_celltypes(n_celltypesSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_centre_within_groups_cpp(kernel, image, celltype, n_images, n_celltypes));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_standardise_cpp
+Rcpp::List pace_standardise_cpp(const Rcpp::NumericVector& values);
+RcppExport SEXP _PACE_pace_standardise_cpp(SEXP valuesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type values(valuesSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_standardise_cpp(values));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_anchor_mask_cpp
+Rcpp::List pace_anchor_mask_cpp(const Rcpp::NumericMatrix& core_means, double owner_threshold, double core_threshold);
+RcppExport SEXP _PACE_pace_anchor_mask_cpp(SEXP core_meansSEXP, SEXP owner_thresholdSEXP, SEXP core_thresholdSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type core_means(core_meansSEXP);
+    Rcpp::traits::input_parameter< double >::type owner_threshold(owner_thresholdSEXP);
+    Rcpp::traits::input_parameter< double >::type core_threshold(core_thresholdSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_anchor_mask_cpp(core_means, owner_threshold, core_threshold));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_normalise_rows_to_max_cpp
+Rcpp::NumericMatrix pace_normalise_rows_to_max_cpp(const Rcpp::NumericMatrix& values);
+RcppExport SEXP _PACE_pace_normalise_rows_to_max_cpp(SEXP valuesSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type values(valuesSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_normalise_rows_to_max_cpp(values));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_neighbour_kernels_cpp", (DL_FUNC) &_PACE_pace_neighbour_kernels_cpp, 9},
@@ -600,6 +711,14 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_tau_clamp_cpp", (DL_FUNC) &_PACE_pace_tau_clamp_cpp, 2},
     {"_PACE_pace_data_informed_weights_cpp", (DL_FUNC) &_PACE_pace_data_informed_weights_cpp, 3},
     {"_PACE_pace_solve_genes_chunk_cpp", (DL_FUNC) &_PACE_pace_solve_genes_chunk_cpp, 11},
+    {"_PACE_pace_dispersion_chunk_cpp", (DL_FUNC) &_PACE_pace_dispersion_chunk_cpp, 10},
+    {"_PACE_pace_dispersion_mle_cpp", (DL_FUNC) &_PACE_pace_dispersion_mle_cpp, 5},
+    {"_PACE_pace_estimate_d0_cpp", (DL_FUNC) &_PACE_pace_estimate_d0_cpp, 3},
+    {"_PACE_pace_drop_sparse_kernel_cpp", (DL_FUNC) &_PACE_pace_drop_sparse_kernel_cpp, 3},
+    {"_PACE_pace_centre_within_groups_cpp", (DL_FUNC) &_PACE_pace_centre_within_groups_cpp, 5},
+    {"_PACE_pace_standardise_cpp", (DL_FUNC) &_PACE_pace_standardise_cpp, 1},
+    {"_PACE_pace_anchor_mask_cpp", (DL_FUNC) &_PACE_pace_anchor_mask_cpp, 3},
+    {"_PACE_pace_normalise_rows_to_max_cpp", (DL_FUNC) &_PACE_pace_normalise_rows_to_max_cpp, 1},
     {NULL, NULL, 0}
 };
 
