@@ -118,7 +118,7 @@ test_that("the gene-block rebuild does not depend on the block size", {
   # statistics of the whole rebuilt matrices.
   n <- nrow(fit@context$df)
   inputs <- PACE:::.pace_mu_inputs(fit, spe)
-  whole <- PACE:::.pace_mu_block(fit, NULL, inputs)
+  whole <- PACE:::.pace_mu_block(fit, inputs)
   whole_mu <- pmax(whole$mu_bio + whole$mu_spill, 1e-6)
   whole_toff <- log1p(whole$mu_spill / whole$mu_bio)
   reference <- PACE:::.pace_statistics_from_matrices(whole_mu, whole_toff,

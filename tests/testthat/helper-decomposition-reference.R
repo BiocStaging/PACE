@@ -45,6 +45,24 @@ reference_single_frame_decomp_obs <- function(Y, celltype, nCount, gene_focal_bl
   do.call(rbind, out)
 }
 
+# A fit made by this version keeps only the per-cell-type statistics, so the
+# per-cell reference below gets the n x G matrices rebuilt from the fit and the
+# counts -- the same rebuild paceDecompose() uses for an older stripped fit.
+with_rebuilt_matrices <- function(fit, spe) {
+  if (!is.null(fit@fit$mu)) return(fit)      # the dense solver still stores them
+  inputs <- PACE:::.pace_mu_inputs(fit, spe)
+  parts <- PACE:::.pace_mu_block(fit, inputs)
+  if (is.null(parts$mu_spill)) {
+    fit@fit$mu <- parts$mu_bio
+    fit@fit$technical_offset_mat <- matrix(0, nrow(parts$mu_bio), ncol(parts$mu_bio))
+  } else {
+    fit@fit$mu <- pmax(parts$mu_bio + parts$mu_spill, 1e-6)
+    fit@fit$technical_offset_mat <- log1p(parts$mu_spill / parts$mu_bio)
+  }
+  fit@fit$bleed_offset_mat <- fit@fit$technical_offset_mat
+  fit
+}
+
 # The f55d976 decomposition wrapper: the per-cell loop of
 # mvpql_variance_decomposition_multi() on a fit that stores mu and the technical
 # offset, plus the 4-block view.
@@ -72,6 +90,17 @@ reference_pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NUL
   dec
 }
 
+# How each entry is missing, so NaN, NA, +Inf and -Inf cannot stand in for one
+# another in the comparison below.
+.pace_value_kind <- function(x) {
+  kind <- rep("finite", length(x))
+  kind[is.nan(x)] <- "NaN"
+  kind[is.na(x) & !is.nan(x)] <- "NA"
+  kind[!is.na(x) & x == Inf] <- "Inf"
+  kind[!is.na(x) & x == -Inf] <- "-Inf"
+  kind
+}
+
 # Two objects are equal when their non-numeric parts are identical and every
 # numeric entry satisfies |a - b| <= tol_abs + tol_rel * |b|, with the absolute
 # floor scaled to the column (exact zeros on one side, 1e-17 residue on the other).
@@ -86,9 +115,13 @@ expect_tables_close <- function(new, reference, tol_rel = 1e-10, tol_abs_scale =
       a <- new[[column]]
       b <- reference[[column]]
       if (is.numeric(b)) {
+        expect_identical(names(a), names(b), label = paste(label, column, "names"))
         a <- as.numeric(a)
         b <- as.numeric(b)
-        expect_identical(is.finite(a), is.finite(b), label = paste(label, column))
+        ## NaN, NA, +Inf and -Inf are told apart: is.finite() alone let a NaN
+        ## stand in for an NA, and +Inf for -Inf.
+        expect_identical(.pace_value_kind(a), .pace_value_kind(b),
+                         label = paste(label, column, "missing pattern"))
         finite <- is.finite(b)
         tol_abs <- tol_abs_scale * max(1, abs(b[finite]))
         within <- abs(a[finite] - b[finite]) <= tol_abs + tol_rel * abs(b[finite])
