@@ -779,7 +779,7 @@ build_random_design_multi <- function(df, re_specs) {
 #   explicit value to decouple kernel threading from the bplapply fork
 #   (e.g. BPPARAM = SerialParam() with n_threads = 4 for OMP-only).
 # @param interior_precision 0 (default, double) or 1 (float interior).
-#   See solve_chunk_full.cpp for the precision/speed/numerics tradeoff.
+#   See core/gene_solve.hpp for what the float interior costs and buys.
 # @return list of per-gene results, one per element of gene_idx
 .solve_genes_chunk_multiblock <- function(X, X_terms_list, cell_grp_list,
                                             cells_by_grp_list,
@@ -792,250 +792,36 @@ build_random_design_multi <- function(df, re_specs) {
   p   <- ncol(X); B_n <- length(blocks)
   q   <- sum(vapply(blocks, function(b) b$n_cols, integer(1)))
 
-  ## ---- Fast path: full C++ solve (Stage 1+2+3 in one call) ------------------
-  ## Skips ALL R-side tensor precomputation. Bit-identical to the R path
-  ## (max abs diff < 1e-7 on Mel allgenes). ~30% wall-time saving by not
-  ## doing Stage 1+2 twice.
-  if (exists("solve_chunk_full_cpp", mode = "function")) {
-    if (is.null(n_threads))
-      n_threads <- tryCatch(max(1L, BiocParallel::bpworkers(BPPARAM)),
-                             error = function(e) 1L)
+  ## The solve is pace::solve_genes_chunk: the within-block tensors, the
+  ## cross-block tensors over the cells two groups share, and the per-gene
+  ## Cholesky, in one call per chunk. Every loop writes its own output slot, so
+  ## the result does not depend on the thread count. The reference it is read
+  ## against is the explicit-Z solve in tests/testthat/test-gene-solve.R.
+  if (is.null(n_threads))
+    n_threads <- tryCatch(max(1L, BiocParallel::bpworkers(BPPARAM)),
+                          error = function(e) 1L)
 
-    res <- solve_chunk_full_cpp(
-      X_fixed         = X,
-      w_chunk         = w[, gene_idx, drop = FALSE],
-      z_chunk         = z[, gene_idx, drop = FALSE],
-      lam_diag_chunk  = lam_diag[, gene_idx, drop = FALSE],
-      q_total         = q,
-      blocks          = blocks,
-      X_terms_list    = lapply(X_terms_list, function(m) {
-                          storage.mode(m) <- "double"; m }),
-      cells_by_grp_list = cells_by_grp_list,
-      cell_grp_list   = cell_grp_list,
-      n_threads       = n_threads,
-      stage3_mode     = 0L,
-      interior_precision = as.integer(interior_precision))
+  res <- pace_solve_genes_chunk_cpp(
+    x_fixed  = X,
+    w        = w[, gene_idx, drop = FALSE],
+    z        = z[, gene_idx, drop = FALSE],
+    lam_diag = lam_diag[, gene_idx, drop = FALSE],
+    q_total  = q,
+    blocks   = blocks,
+    terms_list = lapply(X_terms_list, function(m) {
+                   storage.mode(m) <- "double"; m }),
+    cells_by_group_list = cells_by_grp_list,
+    cell_group_list     = cell_grp_list,
+    single_precision    = as.integer(interior_precision) != 0L,
+    n_threads           = .pace_thread_count(n_threads))
 
-    out_list <- vector("list", G_chunk)
-    for (gi in seq_len(G_chunk)) {
-      out_list[[gi]] <- list(
-        beta      = res$B[, gi],
-        u         = res$U[, gi],
-        Ainv_diag = res$Ainv_diag[, gi])
-    }
-    return(out_list)
-  }
-
-  ## ---- R Stage 1: per-celltype within-block tensors (vectorised over chunk) ----
-  ZtWZ_within <- vector("list", B_n)
-  XtWZ_within <- vector("list", B_n)
-  ZtWz_within <- vector("list", B_n)
-  for (b in seq_len(B_n)) {
-    blk   <- blocks[[b]]
-    K_t_b <- blk$K_terms; K_g_b <- blk$K_groups
-    Xt_b  <- X_terms_list[[b]]
-    cbg   <- cells_by_grp_list[[b]]
-
-    ## All ordered (t1, t2) and (p_idx, t) pairs in column-major reshape order
-    pair_t1 <- rep(seq_len(K_t_b), times = K_t_b)
-    pair_t2 <- rep(seq_len(K_t_b), each  = K_t_b)
-    pair_p  <- rep(seq_len(p),     times = K_t_b)
-    pair_t  <- rep(seq_len(K_t_b), each  = p)
-
-    Z_b_g <- vector("list", K_g_b)
-    X_b_g <- vector("list", K_g_b)
-    z_b_g <- vector("list", K_g_b)
-    for (g in seq_len(K_g_b)) {
-      idx <- cbg[[g]]
-      if (!length(idx)) {
-        Z_b_g[[g]] <- array(0, c(K_t_b, K_t_b, G_chunk))
-        X_b_g[[g]] <- array(0, c(p, K_t_b, G_chunk))
-        z_b_g[[g]] <- matrix(0, K_t_b, G_chunk)
-        next
-      }
-      Xt_g    <- Xt_b[idx, , drop = FALSE]
-      X_g     <- X[idx, , drop = FALSE]
-      w_local <- w[idx, gene_idx, drop = FALSE]   # n_g × G_chunk transient
-
-      ## drop = FALSE everywhere -- when a group has 1 cell, Xt_g[, c(...)]
-      ## otherwise collapses to a vector and crossprod misbehaves.
-      M_pair <- Xt_g[, pair_t1, drop = FALSE] *
-                 Xt_g[, pair_t2, drop = FALSE]            # n_g × K_t_b²
-      Z_b_g[[g]] <- array(crossprod(M_pair, w_local),
-                           dim = c(K_t_b, K_t_b, G_chunk))
-
-      M_xt <- X_g[, pair_p, drop = FALSE] *
-              Xt_g[, pair_t, drop = FALSE]                # n_g × (p × K_t_b)
-      X_b_g[[g]] <- array(crossprod(M_xt, w_local),
-                           dim = c(p, K_t_b, G_chunk))
-
-      WZ_local   <- w_local * z[idx, gene_idx, drop = FALSE]
-      z_b_g[[g]] <- crossprod(Xt_g, WZ_local)                 # K_t_b × G_chunk
-    }
-    ZtWZ_within[[b]] <- Z_b_g
-    XtWZ_within[[b]] <- X_b_g
-    ZtWz_within[[b]] <- z_b_g
-  }
-
-  ## ---- Stage 2: cross-block tensors (b1 < b2) ----
-  cross_blocks <- list()
-  if (B_n >= 2L) {
-    for (b1 in seq_len(B_n - 1L)) {
-      blk1   <- blocks[[b1]]; K_t_1 <- blk1$K_terms; K_g_1 <- blk1$K_groups
-      Xt_1   <- X_terms_list[[b1]]; cbg_1 <- cells_by_grp_list[[b1]]
-      for (b2 in (b1 + 1L):B_n) {
-        blk2   <- blocks[[b2]]; K_t_2 <- blk2$K_terms; K_g_2 <- blk2$K_groups
-        Xt_2   <- X_terms_list[[b2]]
-        grp2   <- cell_grp_list[[b2]]
-        pair_t1_cross <- rep(seq_len(K_t_1), times = K_t_2)
-        pair_t2_cross <- rep(seq_len(K_t_2), each  = K_t_1)
-        for (g1 in seq_len(K_g_1)) {
-          idx1 <- cbg_1[[g1]]
-          if (!length(idx1)) next
-          g2_of_idx1 <- grp2[idx1]
-          splits <- split(idx1, g2_of_idx1)
-          for (g2_str in names(splits)) {
-            g2  <- as.integer(g2_str)
-            idx <- splits[[g2_str]]
-            if (!length(idx)) next
-            Xt_1_sub <- Xt_1[idx, , drop = FALSE]
-            Xt_2_sub <- Xt_2[idx, , drop = FALSE]
-            w_local  <- w[idx, gene_idx, drop = FALSE]
-            M_cross  <- Xt_1_sub[, pair_t1_cross, drop = FALSE] *
-                         Xt_2_sub[, pair_t2_cross, drop = FALSE]
-            cross_blocks[[length(cross_blocks) + 1L]] <- list(
-              array = array(crossprod(M_cross, w_local),
-                            dim = c(K_t_1, K_t_2, G_chunk)),
-              b1 = b1, b2 = b2, g1 = g1, g2 = g2,
-              K_t_1 = K_t_1, K_t_2 = K_t_2,
-              K_g_1 = K_g_1, K_g_2 = K_g_2,
-              col_offset_1 = blk1$col_offset,
-              col_offset_2 = blk2$col_offset)
-          }
-        }
-      }
-    }
-  }
-
-  ## ---- Stage 3: per-gene assemble + chol + solve + diag-inverse ----
-  ## R fallback when full C++ kernel isn't available; if only the partial
-  ## Stage-3 kernel (solve_chunk_mb_cpp) is loaded, use that to skip the
-  ## R-side per-gene assembly.
-  use_cpp <- exists("solve_chunk_mb_cpp", mode = "function")
-  if (use_cpp) {
-    ## Reshape 3D arrays to 2D matrices for the C++ side (no copy; just dim).
-    ## R is column-major, so K_t × K_t × G_chunk -> K_t² × G_chunk preserves the layout.
-    ZtWZ_2d <- vector("list", B_n)
-    XtWZ_2d <- vector("list", B_n)
-    ZtWz_2d <- vector("list", B_n)
-    for (b in seq_len(B_n)) {
-      K_t_b <- blocks[[b]]$K_terms; K_g_b <- blocks[[b]]$K_groups
-      ZtWZ_2d[[b]] <- vector("list", K_g_b)
-      XtWZ_2d[[b]] <- vector("list", K_g_b)
-      ZtWz_2d[[b]] <- vector("list", K_g_b)
-      for (g in seq_len(K_g_b)) {
-        a <- ZtWZ_within[[b]][[g]]; dim(a) <- c(K_t_b * K_t_b, G_chunk)
-        ZtWZ_2d[[b]][[g]] <- a
-        a <- XtWZ_within[[b]][[g]]; dim(a) <- c(p * K_t_b, G_chunk)
-        XtWZ_2d[[b]][[g]] <- a
-        ZtWz_2d[[b]][[g]] <- ZtWz_within[[b]][[g]]   # already K_t × G_chunk
-      }
-    }
-    cross_2d <- lapply(cross_blocks, function(cb) {
-      a <- cb$array; dim(a) <- c(cb$K_t_1 * cb$K_t_2, G_chunk)
-      list(array        = a,
-           b1 = cb$b1, b2 = cb$b2, g1 = cb$g1, g2 = cb$g2,
-           K_t_1 = cb$K_t_1, K_t_2 = cb$K_t_2,
-           K_g_1 = cb$K_g_1, K_g_2 = cb$K_g_2,
-           col_offset_1 = cb$col_offset_1,
-           col_offset_2 = cb$col_offset_2)
-    })
-
-    if (is.null(n_threads))
-      n_threads <- tryCatch(
-        max(1L, BiocParallel::bpworkers(BPPARAM)),
-        error = function(e) 1L)
-
-    res <- solve_chunk_mb_cpp(
-      X_fixed         = X,
-      w_chunk         = w[, gene_idx, drop = FALSE],
-      z_chunk         = z[, gene_idx, drop = FALSE],
-      lam_diag_chunk  = lam_diag[, gene_idx, drop = FALSE],
-      q_total         = q,
-      blocks          = blocks,
-      ZtWZ_within     = ZtWZ_2d,
-      XtWZ_within     = XtWZ_2d,
-      ZtWz_within     = ZtWz_2d,
-      cross_blocks    = cross_2d,
-      n_threads       = n_threads)
-
-    ## Repackage into the list-of-lists shape the rest of pace_mvpql expects.
-    out_list <- vector("list", G_chunk)
-    for (gi in seq_len(G_chunk)) {
-      out_list[[gi]] <- list(
-        beta      = res$B[, gi],
-        u         = res$U[, gi],
-        Ainv_diag = res$Ainv_diag[, gi])
-    }
-    return(out_list)
-  }
-
-  ## R fallback (original bplapply path)
-  BiocParallel::bplapply(seq_len(G_chunk), function(local_gi) {
-    full_gi <- gene_idx[local_gi]
-
-    ## Per-gene fixed-block crossprods (cheap; vectorising would need an
-    ## n × p² matrix that is bigger than the savings).
-    Xw_gi    <- X * w[, full_gi]
-    XtWX     <- crossprod(X, Xw_gi)
-    XtWz_vec <- as.numeric(crossprod(X, w[, full_gi] * z[, full_gi]))
-
-    ZtWZ <- matrix(0, q, q)
-    XtWZ <- matrix(0, p, q)
-    ZtWz <- numeric(q)
-
-    for (b in seq_len(B_n)) {
-      blk <- blocks[[b]]
-      K_t_b <- blk$K_terms; K_g_b <- blk$K_groups
-      for (g in seq_len(K_g_b)) {
-        cols <- blk$col_offset + ((seq_len(K_t_b) - 1L) * K_g_b + g)
-        ## Slice the precomputed arrays at this gene index. drop = FALSE
-        ## isn't supported the way we'd want for [, , gi]; matrix() is the
-        ## safe form when K_t_b == 1.
-        ZtWZ[cols, cols] <- matrix(ZtWZ_within[[b]][[g]][, , local_gi],
-                                    nrow = K_t_b, ncol = K_t_b)
-        XtWZ[, cols]     <- matrix(XtWZ_within[[b]][[g]][, , local_gi],
-                                    nrow = p,     ncol = K_t_b)
-        ZtWz[cols]       <- ZtWz_within[[b]][[g]][, local_gi]
-      }
-    }
-
-    for (cb in cross_blocks) {
-      cols1 <- cb$col_offset_1 + ((seq_len(cb$K_t_1) - 1L) * cb$K_g_1 + cb$g1)
-      cols2 <- cb$col_offset_2 + ((seq_len(cb$K_t_2) - 1L) * cb$K_g_2 + cb$g2)
-      block_xy <- matrix(cb$array[, , local_gi],
-                          nrow = cb$K_t_1, ncol = cb$K_t_2)
-      ZtWZ[cols1, cols2] <- block_xy
-      ZtWZ[cols2, cols1] <- t(block_xy)
-    }
-
-    diag(ZtWZ) <- diag(ZtWZ) + lam_diag[, full_gi]
-
-    A     <- rbind(cbind(XtWX,  XtWZ),
-                   cbind(t(XtWZ), ZtWZ))
-    b_vec <- c(XtWz_vec, ZtWz)
-
-    R <- tryCatch(chol(A), error = function(e) NULL)
-    if (is.null(R)) {
-      return(list(beta = rep(NA_real_, p), u = rep(NA_real_, q),
-                  Ainv_diag = rep(NA_real_, p + q)))
-    }
-    sol  <- backsolve(R, backsolve(R, b_vec, transpose = TRUE))
-    Ainv <- chol2inv(R)
-    list(beta = sol[seq_len(p)], u = sol[p + seq_len(q)],
-         Ainv_diag = diag(Ainv))
-  }, BPPARAM = BPPARAM)
+  lapply(seq_len(G_chunk), function(gi) {
+    list(beta      = res$B[, gi],
+         u         = res$U[, gi],
+         Ainv_diag = res$Ainv_diag[, gi])
+  })
 }
+
 
 
 # Multivariate PQL fit
@@ -1357,7 +1143,7 @@ fit_pace_mvpql_multi <- function(Y, X_fixed, df, re_specs,
   if (is.null(offset_vec)) offset_vec <- rep(0, nrow(Y))
   ## Resolve OpenMP thread count for the C++ kernel. Decoupled from BPPARAM
   ## so the caller can use SerialParam (no fork) while still getting
-  ## multi-threaded Stage 1+2+3 inside solve_chunk_full_cpp.
+  ## multi-threaded solve inside pace::solve_genes_chunk.
   if (is.null(n_threads))
     n_threads <- tryCatch(max(1L, BiocParallel::bpworkers(BPPARAM)),
                            error = function(e) 1L)

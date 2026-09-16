@@ -388,7 +388,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
         interior_precision = iter_precision,
         BPPARAM = BPPARAM)
       ## LOSSLESS NaN GUARD (root-cause fix): the float (interior_precision=1)
-      ## per-gene Cholesky in solve_chunk_full_cpp returns a NaN BLUP column when
+      ## per-gene Cholesky in the compiled solve returns a NaN BLUP column when
       ## a gene's working-weight system is borderline in single precision (rare,
       ## run-to-run-variable because float OMP dgemm accumulation order is not
       ## bit-reproducible). A single NaN BLUP column makes Z%*%U[,g] NaN, which
@@ -562,24 +562,21 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     alpha_new <- numeric(g_n)
     for (cs in chk_starts) {
       gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-      m_chk <- length(gene_idx_chk)
-      for (sub in seq.int(1L, m_chk, by = sub_genes)) {
-        jj <- sub:min(sub + sub_genes - 1L, m_chk)
-        eta_sub <- .eta_block(B, U, gene_idx_chk[jj])
-        first_gene <- gene_idx_chk[jj][1L]
-        ## SPEED 2: alpha MLE on the FORKED param (deterministic per gene). Each
-        ## gene's fitted mean is rebuilt in C++ from that gene's column alone.
-        a_list <- BiocParallel::bplapply(seq_along(jj),
-                    function(k) {
-                      column <- pace_fitted_mean_column_cpp(eta_sub[, k], Y, a_cache, first_gene,
-                                                            k, offset_vec, add_rho)
-                      if (disp_nb2) .alpha_nb2_mle(column$y, column$mu, max_n = alpha_max_n)
-                      else          .alpha_nb1_mle(column$y, column$mu, max_n = alpha_max_n,
-                                                   zero_collapse = alpha_zero_collapse)
-                    }, BPPARAM = alpha_PARAM)
-        alpha_new[gene_idx_chk[jj]] <- unlist(a_list, use.names = FALSE)
-        rm(eta_sub, a_list)
-      }
+      eta_chk <- .eta_block(B, U, gene_idx_chk)
+      first_gene <- gene_idx_chk[1L]
+      ## SPEED 2: alpha MLE on the FORKED param (deterministic per gene). Each
+      ## gene's fitted mean is rebuilt in C++ from that gene's column alone.
+      ## One fork round per chunk, not per gene: forking is what this costs.
+      a_list <- BiocParallel::bplapply(seq_along(gene_idx_chk),
+                  function(k) {
+                    column <- pace_fitted_mean_column_cpp(eta_chk[, k], Y, a_cache, first_gene,
+                                                          k, offset_vec, add_rho)
+                    if (disp_nb2) .alpha_nb2_mle(column$y, column$mu, max_n = alpha_max_n)
+                    else          .alpha_nb1_mle(column$y, column$mu, max_n = alpha_max_n,
+                                                 zero_collapse = alpha_zero_collapse)
+                  }, BPPARAM = alpha_PARAM)
+      alpha_new[gene_idx_chk] <- unlist(a_list, use.names = FALSE)
+      rm(eta_chk, a_list)
     }
     alpha <- alpha_new
     alpha[!is.finite(alpha)] <- prev_alpha[!is.finite(alpha)]

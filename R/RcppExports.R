@@ -133,11 +133,7 @@ pace_data_informed_weights_cpp <- function(detection_rate, focal_of_row, scale_o
     .Call(`_PACE_pace_data_informed_weights_cpp`, detection_rate, focal_of_row, scale_of_row)
 }
 
-solve_chunk_full_cpp <- function(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode = 0L, interior_precision = 0L) {
-    .Call(`_PACE_solve_chunk_full_cpp`, X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode, interior_precision)
-}
-
-solve_chunk_mb_cpp <- function(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, ZtWZ_within, XtWZ_within, ZtWz_within, cross_blocks, n_threads) {
-    .Call(`_PACE_solve_chunk_mb_cpp`, X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, ZtWZ_within, XtWZ_within, ZtWz_within, cross_blocks, n_threads)
+pace_solve_genes_chunk_cpp <- function(x_fixed, w, z, lam_diag, q_total, blocks, terms_list, cells_by_group_list, cell_group_list, single_precision, n_threads) {
+    .Call(`_PACE_pace_solve_genes_chunk_cpp`, x_fixed, w, z, lam_diag, q_total, blocks, terms_list, cells_by_group_list, cell_group_list, single_precision, n_threads)
 }
 

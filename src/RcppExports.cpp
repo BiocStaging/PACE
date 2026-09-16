@@ -543,46 +543,24 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
-// solve_chunk_full_cpp
-List solve_chunk_full_cpp(const Eigen::Map<Eigen::MatrixXd>& X_fixed, const Eigen::Map<Eigen::MatrixXd>& w_chunk, const Eigen::Map<Eigen::MatrixXd>& z_chunk, const Eigen::Map<Eigen::MatrixXd>& lam_diag_chunk, int q_total, const List& blocks, const List& X_terms_list, const List& cells_by_grp_list, const List& cell_grp_list, int n_threads, int stage3_mode, int interior_precision);
-RcppExport SEXP _PACE_solve_chunk_full_cpp(SEXP X_fixedSEXP, SEXP w_chunkSEXP, SEXP z_chunkSEXP, SEXP lam_diag_chunkSEXP, SEXP q_totalSEXP, SEXP blocksSEXP, SEXP X_terms_listSEXP, SEXP cells_by_grp_listSEXP, SEXP cell_grp_listSEXP, SEXP n_threadsSEXP, SEXP stage3_modeSEXP, SEXP interior_precisionSEXP) {
+// pace_solve_genes_chunk_cpp
+Rcpp::List pace_solve_genes_chunk_cpp(const Rcpp::NumericMatrix& x_fixed, const Rcpp::NumericMatrix& w, const Rcpp::NumericMatrix& z, const Rcpp::NumericMatrix& lam_diag, int q_total, const Rcpp::List& blocks, const Rcpp::List& terms_list, const Rcpp::List& cells_by_group_list, const Rcpp::List& cell_group_list, bool single_precision, int n_threads);
+RcppExport SEXP _PACE_pace_solve_genes_chunk_cpp(SEXP x_fixedSEXP, SEXP wSEXP, SEXP zSEXP, SEXP lam_diagSEXP, SEXP q_totalSEXP, SEXP blocksSEXP, SEXP terms_listSEXP, SEXP cells_by_group_listSEXP, SEXP cell_group_listSEXP, SEXP single_precisionSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type X_fixed(X_fixedSEXP);
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type w_chunk(w_chunkSEXP);
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type z_chunk(z_chunkSEXP);
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type lam_diag_chunk(lam_diag_chunkSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type x_fixed(x_fixedSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type w(wSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type z(zSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type lam_diag(lam_diagSEXP);
     Rcpp::traits::input_parameter< int >::type q_total(q_totalSEXP);
-    Rcpp::traits::input_parameter< const List& >::type blocks(blocksSEXP);
-    Rcpp::traits::input_parameter< const List& >::type X_terms_list(X_terms_listSEXP);
-    Rcpp::traits::input_parameter< const List& >::type cells_by_grp_list(cells_by_grp_listSEXP);
-    Rcpp::traits::input_parameter< const List& >::type cell_grp_list(cell_grp_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type blocks(blocksSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type terms_list(terms_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type cells_by_group_list(cells_by_group_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type cell_group_list(cell_group_listSEXP);
+    Rcpp::traits::input_parameter< bool >::type single_precision(single_precisionSEXP);
     Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
-    Rcpp::traits::input_parameter< int >::type stage3_mode(stage3_modeSEXP);
-    Rcpp::traits::input_parameter< int >::type interior_precision(interior_precisionSEXP);
-    rcpp_result_gen = Rcpp::wrap(solve_chunk_full_cpp(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode, interior_precision));
-    return rcpp_result_gen;
-END_RCPP
-}
-// solve_chunk_mb_cpp
-List solve_chunk_mb_cpp(const Eigen::Map<Eigen::MatrixXd>& X_fixed, const Eigen::Map<Eigen::MatrixXd>& w_chunk, const Eigen::Map<Eigen::MatrixXd>& z_chunk, const Eigen::Map<Eigen::MatrixXd>& lam_diag_chunk, int q_total, const List& blocks, const List& ZtWZ_within, const List& XtWZ_within, const List& ZtWz_within, const List& cross_blocks, int n_threads);
-RcppExport SEXP _PACE_solve_chunk_mb_cpp(SEXP X_fixedSEXP, SEXP w_chunkSEXP, SEXP z_chunkSEXP, SEXP lam_diag_chunkSEXP, SEXP q_totalSEXP, SEXP blocksSEXP, SEXP ZtWZ_withinSEXP, SEXP XtWZ_withinSEXP, SEXP ZtWz_withinSEXP, SEXP cross_blocksSEXP, SEXP n_threadsSEXP) {
-BEGIN_RCPP
-    Rcpp::RObject rcpp_result_gen;
-    Rcpp::RNGScope rcpp_rngScope_gen;
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type X_fixed(X_fixedSEXP);
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type w_chunk(w_chunkSEXP);
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type z_chunk(z_chunkSEXP);
-    Rcpp::traits::input_parameter< const Eigen::Map<Eigen::MatrixXd>& >::type lam_diag_chunk(lam_diag_chunkSEXP);
-    Rcpp::traits::input_parameter< int >::type q_total(q_totalSEXP);
-    Rcpp::traits::input_parameter< const List& >::type blocks(blocksSEXP);
-    Rcpp::traits::input_parameter< const List& >::type ZtWZ_within(ZtWZ_withinSEXP);
-    Rcpp::traits::input_parameter< const List& >::type XtWZ_within(XtWZ_withinSEXP);
-    Rcpp::traits::input_parameter< const List& >::type ZtWz_within(ZtWz_withinSEXP);
-    Rcpp::traits::input_parameter< const List& >::type cross_blocks(cross_blocksSEXP);
-    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(solve_chunk_mb_cpp(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, ZtWZ_within, XtWZ_within, ZtWz_within, cross_blocks, n_threads));
+    rcpp_result_gen = Rcpp::wrap(pace_solve_genes_chunk_cpp(x_fixed, w, z, lam_diag, q_total, blocks, terms_list, cells_by_group_list, cell_group_list, single_precision, n_threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -621,8 +599,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_tau_half_cauchy_cpp", (DL_FUNC) &_PACE_pace_tau_half_cauchy_cpp, 5},
     {"_PACE_pace_tau_clamp_cpp", (DL_FUNC) &_PACE_pace_tau_clamp_cpp, 2},
     {"_PACE_pace_data_informed_weights_cpp", (DL_FUNC) &_PACE_pace_data_informed_weights_cpp, 3},
-    {"_PACE_solve_chunk_full_cpp", (DL_FUNC) &_PACE_solve_chunk_full_cpp, 12},
-    {"_PACE_solve_chunk_mb_cpp", (DL_FUNC) &_PACE_solve_chunk_mb_cpp, 11},
+    {"_PACE_pace_solve_genes_chunk_cpp", (DL_FUNC) &_PACE_pace_solve_genes_chunk_cpp, 11},
     {NULL, NULL, 0}
 };
 

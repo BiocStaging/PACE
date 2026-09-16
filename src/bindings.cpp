@@ -11,6 +11,7 @@
 #include "core/count_stats.hpp"
 #include "core/core_types.hpp"
 #include "core/decomposition.hpp"
+#include "core/gene_solve.hpp"
 #include "core/hyperparameters.hpp"
 #include "core/irls_chunk.hpp"
 #include "core/neighbourhood.hpp"
@@ -850,3 +851,59 @@ Rcpp::NumericMatrix pace_data_informed_weights_cpp(const Rcpp::NumericMatrix& de
   return weights;
 }
 
+// The per-gene penalised WLS solve of one chunk (see core/gene_solve.hpp).
+// `blocks` carries col_offset / K_terms / K_groups; `cells_by_grp_list` and
+// `cell_grp_list` are 1-based, as R built them.
+// [[Rcpp::export]]
+Rcpp::List pace_solve_genes_chunk_cpp(const Rcpp::NumericMatrix& x_fixed,
+                                      const Rcpp::NumericMatrix& w, const Rcpp::NumericMatrix& z,
+                                      const Rcpp::NumericMatrix& lam_diag, int q_total,
+                                      const Rcpp::List& blocks, const Rcpp::List& terms_list,
+                                      const Rcpp::List& cells_by_group_list,
+                                      const Rcpp::List& cell_group_list, bool single_precision,
+                                      int n_threads) {
+  const std::int64_t n = x_fixed.nrow();
+  const std::int64_t p = x_fixed.ncol();
+  const std::int64_t n_genes = w.ncol();
+  const int n_blocks = blocks.size();
+
+  // The block inputs are held here for the duration of the call; the core sees spans.
+  std::vector<Rcpp::NumericMatrix> terms(n_blocks);
+  std::vector<Rcpp::IntegerVector> cell_group(n_blocks);
+  std::vector<std::vector<int>> group_offsets(n_blocks);
+  std::vector<std::vector<int>> group_cells(n_blocks);
+  std::vector<pace::SolveBlock> core_blocks(n_blocks);
+  for (int b = 0; b < n_blocks; ++b) {
+    const Rcpp::List block = blocks[b];
+    core_blocks[b].col_offset = Rcpp::as<int>(block["col_offset"]);
+    core_blocks[b].n_terms = Rcpp::as<int>(block["K_terms"]);
+    core_blocks[b].n_groups = Rcpp::as<int>(block["K_groups"]);
+    terms[b] = Rcpp::as<Rcpp::NumericMatrix>(terms_list[b]);
+    cell_group[b] = Rcpp::as<Rcpp::IntegerVector>(cell_group_list[b]);
+    const Rcpp::List cells = cells_by_group_list[b];
+    group_offsets[b].reserve(core_blocks[b].n_groups + 1);
+    group_offsets[b].push_back(0);
+    for (int g = 0; g < core_blocks[b].n_groups; ++g) {
+      const Rcpp::IntegerVector rows = cells[g];
+      for (R_xlen_t i = 0; i < rows.size(); ++i) group_cells[b].push_back(rows[i] - 1);
+      group_offsets[b].push_back(static_cast<int>(group_cells[b].size()));
+    }
+    core_blocks[b].terms = const_span(terms[b]);
+    core_blocks[b].cell_group = int_span(cell_group[b]);
+    core_blocks[b].group_offsets =
+        pace::Span<const int>(group_offsets[b].data(), static_cast<std::int64_t>(group_offsets[b].size()));
+    core_blocks[b].group_cells =
+        pace::Span<const int>(group_cells[b].data(), static_cast<std::int64_t>(group_cells[b].size()));
+  }
+
+  Rcpp::NumericMatrix beta(p, n_genes);
+  Rcpp::NumericMatrix u(q_total, n_genes);
+  Rcpp::NumericMatrix ainv_diag(p + q_total, n_genes);
+  const pace::Status status = pace::solve_genes_chunk(
+      const_span(x_fixed), n, p, core_blocks, const_span(w), const_span(z), const_span(lam_diag),
+      q_total, n_genes, single_precision, n_threads, user_interrupted, out_span(beta), out_span(u),
+      out_span(ainv_diag));
+  raise_if_failed(status, "gene solve");
+  return Rcpp::List::create(Rcpp::Named("B") = beta, Rcpp::Named("U") = u,
+                            Rcpp::Named("Ainv_diag") = ainv_diag);
+}
