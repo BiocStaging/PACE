@@ -18,61 +18,64 @@
 ## within blocks reuse the locked gene_focal_4block decomposition. Cell-type % is scale-dependent
 ## (computed on log1p CP10k; raw counts and link scale differ).
 
-## The observed sums come from one pass over the sparse counts in C++
-## (pace_single_frame_statistics_cpp): per (type, gene) the focal mean and the
-## within sum of squares, and per gene the global mean, with
-##   SS_within = sum over stored entries of (y - m)^2 + (n_c - stored) * m^2,
-## so no dense n x G log1p matrix is built. `threads` only splits the work.
+## The observed sums come from one pass over the sparse counts
+## (pace::single_frame_statistics) and the shares from pace::single_frame_shares;
+## no dense n x G log1p matrix is built. R only aligns each focal's fit rows to
+## the gene order and assembles the returned frame.
 single_frame_decomp_obs <- function(Y, celltype, nCount, gene_focal_block, threads = 1L) {
   genes <- colnames(Y)
+  n_genes <- length(genes)
   ct <- as.character(celltype)
   TYPES <- sort(unique(ct))
-  counts <- .pace_as_dgc(Y)
-  frame <- pace_single_frame_statistics_cpp(counts, as.numeric(nCount), .pace_codes(ct, TYPES),
-                                            length(TYPES), n_threads = .pace_thread_count(threads))
-  global_mean <- frame$global_mean
-  names(global_mean) <- genes
+  threads <- .pace_thread_count(threads)
+  type_code <- .pace_codes(ct, TYPES)
+  group_size <- tabulate(type_code + 1L, nbins = length(TYPES))
+  frame <- pace_single_frame_statistics_cpp(.pace_as_dgc(Y), as.numeric(nCount), type_code,
+                                            length(TYPES), n_threads = threads)
   gf <- gene_focal_block
   # Condition cohorts split the spatial component into baseline + responder
   # (gene_focal_5block has V_state_responder); no-condition cohorts have V_state.
   has_resp <- "V_state_responder" %in% names(gf)
 
-  out <- vector("list", length(TYPES))
-  k <- 0L
+  ## the fit's within-cell-type components, one row per type, aligned to `genes`
+  empty <- matrix(NA_real_, length(TYPES), n_genes)
+  v_state <- empty
+  v_responder <- if (has_resp) empty else matrix(0, 0, 0)
+  v_spill <- empty
+  v_disp <- empty
   for (type_index in seq_along(TYPES)) {
-    fc_type <- TYPES[type_index]
-    n_fc <- sum(ct == fc_type)
-    if (n_fc < 5) next
-    focal_mean <- frame$focal_mean[type_index, ]
-    SS_within  <- frame$within_ss[type_index, ]                  # per gene, observed
-    SS_lineage <- n_fc * (focal_mean - global_mean)^2            # per gene, observed
-    den <- SS_lineage + SS_within
-    ## fit within-proportions (locked gene_focal block) for this focal
-    g4 <- gf[gf$focal == fc_type, , drop = FALSE]
+    g4 <- gf[gf$focal == TYPES[type_index], , drop = FALSE]
     idx <- match(genes, g4$gene)
-    vstate <- if (has_resp) g4$V_state_baseline[idx] else g4$V_state[idx]
-    vresp  <- if (has_resp) g4$V_state_responder[idx] else 0
-    vspill <- g4$V_spill[idx]
-    vdisp <- g4$V_disp[idx]
-    vt <- vstate + vresp + vspill + vdisp
-    p_sp   <- ifelse(vt > 0, vstate / vt, 0)
-    p_resp <- ifelse(vt > 0, vresp  / vt, 0)
-    p_bl   <- ifelse(vt > 0, vspill / vt, 0)
-    p_rs   <- ifelse(vt > 0, vdisp  / vt, 0)
-    k <- k + 1L
-    row <- data.frame(
-      focal = fc_type, gene = genes,
-      `Cell type %` = 100 * SS_lineage       / den,
-      `Spatial %`   = 100 * SS_within * p_sp / den,
-      check.names = FALSE, stringsAsFactors = FALSE)
-    if (has_resp) row[["Responder spatial %"]] <- 100 * SS_within * p_resp / den
-    row[["Spillover %"]] <- 100 * SS_within * p_bl / den
-    row[["Residual %"]]  <- 100 * SS_within * p_rs / den
-    row$SS_lineage <- SS_lineage
-    row$SS_within <- SS_within
-    row$denom <- den
-    row$n_focal <- n_fc
-    out[[k]] <- row
+    v_state[type_index, ] <- if (has_resp) g4$V_state_baseline[idx] else g4$V_state[idx]
+    if (has_resp) v_responder[type_index, ] <- g4$V_state_responder[idx]
+    v_spill[type_index, ] <- g4$V_spill[idx]
+    v_disp[type_index, ] <- g4$V_disp[idx]
+  }
+  shares <- pace_single_frame_shares_cpp(frame$focal_mean, frame$within_ss, frame$global_mean,
+                                         group_size, v_state, v_responder, v_spill, v_disp,
+                                         n_threads = threads)
+
+  ## One block per kept focal, row-named by gene, as the per-cell version was:
+  ## its first numeric column carried the gene names of colMeans(), and rbind()
+  ## made them unique across focals.
+  kept <- which(shares$keep == 1L)
+  if (!length(kept)) return(NULL)
+  out <- vector("list", length(kept))
+  for (k in seq_along(kept)) {
+    rows <- seq_len(n_genes) + (kept[k] - 1L) * n_genes
+    block <- data.frame(
+      focal = TYPES[kept[k]], gene = genes,
+      `Cell type %` = shares$pct_celltype[rows],
+      `Spatial %`   = shares$pct_spatial[rows],
+      check.names = FALSE, stringsAsFactors = FALSE, row.names = genes)
+    if (has_resp) block[["Responder spatial %"]] <- shares$pct_responder[rows]
+    block[["Spillover %"]] <- shares$pct_spill[rows]
+    block[["Residual %"]]  <- shares$pct_residual[rows]
+    block$SS_lineage <- shares$SS_lineage[rows]
+    block$SS_within <- shares$SS_within[rows]
+    block$denom <- shares$denom[rows]
+    block$n_focal <- group_size[kept[k]]
+    out[[k]] <- block
   }
   do.call(rbind, out)
 }
@@ -91,9 +94,9 @@ single_frame_decomp_obs <- function(Y, celltype, nCount, gene_focal_block, threa
 ##                          = beta_near,g' Cov_{i in c}(X_near,i) beta_near,g    (legacy _near fixed effects)
 ##   V_disp(c, g)           = log(1 + (1 + max(alpha_g, 0)) / max(mu_mean[c, g], 1e-9))   (NB1, Leckie 2020)
 ##
-## (var(a' x) = a' Cov(x) a for a fixed vector a.) The covariances come from C++
-## with stats::cov semantics; mu_mean, toff_var and the use_bleed flag come from
-## .pace_fit_statistics(); count means from the sparse counts. Kept as-is from the
+## (var(a' x) = a' Cov(x) a for a fixed vector a.) The arithmetic is
+## pace::variance_decomposition; R locates the BLUP rows by name, hands over the
+## covariances and the statistics, and assembles the table. Kept as-is from the
 ## original: the NB1 V_disp formula (also for NB2 fits) and its 1e-9 floor.
 ## ---------------------------------------------------------------------------
 mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
@@ -103,6 +106,7 @@ mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
                                                weight_by_spec_sq = TRUE,
                                                threads = 1L) {
   disp_model <- match.arg(disp_model)
+  threads <- .pace_thread_count(threads)
   re <- fit$re_meta
   blk_idx_ct <- which(vapply(re$blocks, `[[`, character(1), "group_col") == "celltype")
   if (length(blk_idx_ct) != 1L)
@@ -111,9 +115,9 @@ mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
   groups <- blk_ct$group_levels
   if (is.null(focal_levels)) focal_levels <- intersect(as.character(unique(df$celltype)), groups)
   gene_names <- colnames(fit$U)
-  G <- length(gene_names)
   celltype <- as.character(df$celltype)
 
+  ## 1-based row of fit$U holding term `t_idx` of group `g_idx`
   ct_col <- function(t_idx, g_idx) {
     blk_ct$col_offset + (t_idx - 1L) * blk_ct$K_groups + g_idx
   }
@@ -122,159 +126,114 @@ mvpql_variance_decomposition_stats <- function(fit, stats, df, Y, vars, X_fixed,
   fix_names <- rownames(fit$B)
   spill_idx <- which(grepl("_near$|spill", fix_names, ignore.case = TRUE))
   use_bleed <- isTRUE(stats$toff_any_nonzero)
+  focal_group <- match(focal_levels, groups)
+  type_code <- .pace_codes(celltype, groups)
+  group_size <- tabulate(type_code + 1L, nbins = length(groups))
 
-  ## per-type mean counts; a type with no cells keeps 0, as the original loop did
-  group_sizes <- vapply(groups, function(type) sum(celltype == type), numeric(1))
-  ct_means <- pace_group_column_means_cpp(.pace_as_dgc(Y), .pace_codes(celltype, groups),
-                                          length(groups), detection = FALSE,
-                                          n_threads = .pace_thread_count(threads))
-  ct_means[group_sizes == 0, ] <- 0
-  dimnames(ct_means) <- list(groups, gene_names)
-
-  ## per-type covariances of the kernel columns, the responder products and the
-  ## legacy spillover covariates
+  ## per-type mean counts, and per-type covariances of the kernel columns, the
+  ## responder products and the legacy spillover covariates
+  ct_means <- pace_group_column_means_cpp(.pace_as_dgc(Y), type_code, length(groups),
+                                          detection = FALSE, n_threads = threads)
   kernel_cov <- .pace_group_covariances(df[, vars, drop = FALSE], celltype, groups, threads)
-  responder_cov <- NULL
+  empty_matrix <- matrix(0, 0, 0)
+  responder_cov <- numeric(0)
+  responder_rows <- matrix(0L, 0, 0)
+  responder_keep <- integer(0)
   if (has_resp) {
     if (!".resp_dummy" %in% colnames(df))
       stop("variance decomposition: resp_term given and interaction terms present, but df$.resp_dummy (the condition 0/1 indicator) is missing. The builder must set it.")
     responder_cov <- .pace_group_covariances(as.matrix(df[, vars, drop = FALSE]) * df[[".resp_dummy"]],
                                              celltype, groups, threads)
+    matched <- match(paste0(resp_term, ":", vars), names(term2t))
+    responder_keep <- which(!is.na(matched))
+    responder_rows <- vapply(focal_group, function(g_idx)
+      as.integer(ct_col(term2t[matched[responder_keep]], g_idx)), integer(length(responder_keep)))
+    dim(responder_rows) <- c(length(responder_keep), length(focal_group))
   }
-  spill_cov <- NULL
+  spill_cov <- numeric(0)
+  beta_spill <- empty_matrix
   if (!use_bleed && length(spill_idx)) {
     spill_cov <- .pace_group_covariances(X_fixed[, spill_idx, drop = FALSE], celltype, groups, threads)
+    beta_spill <- fit$B[spill_idx, , drop = FALSE]
   }
 
-  rows_naka <- vector("list", length(focal_levels))
-  n_blocks <- 0L
-  for (c_name in focal_levels) {
-    c_idx <- match(c_name, groups)
-    n_c <- sum(celltype == c_name)
-    if (n_c < 5L) next
-    fmean      <- ct_means[c_idx, ]
-    other_max  <- apply(ct_means[-c_idx, , drop = FALSE], 2, max, na.rm = TRUE)
-    spec_focal <- fmean / pmax(fmean + other_max, 1e-9)
-    foratio    <- fmean / pmax(other_max, 1e-9)
+  if (anyNA(term2t[vars]))
+    stop("variance decomposition: the celltype random-effect block has no term for ",
+         paste(vars[is.na(term2t[vars])], collapse = ", "), call. = FALSE)
+  slope_rows <- vapply(focal_group, function(g_idx)
+    as.integer(ct_col(term2t[vars], g_idx)), integer(length(vars)))
+  dim(slope_rows) <- c(length(vars), length(focal_group))
+  intercept_rows <- as.integer(ct_col(term2t[["(Intercept)"]], focal_group))
 
-    ## Baseline spatial state: quadratic form in the slope BLUPs.
-    slope_rows <- vapply(vars, function(v) ct_col(term2t[[v]], c_idx), numeric(1))
-    S_c <- kernel_cov[[c_name]]
-    U_slopes <- fit$U[slope_rows, , drop = FALSE]                  # K x G
-    SE2_slopes <- fit$se_U[slope_rows, , drop = FALSE]^2
-    V_state_baseline <- colSums(U_slopes * (S_c %*% U_slopes)) +
-                        colSums(SE2_slopes * diag(S_c), na.rm = TRUE)
+  blocks <- pace_variance_decomposition_cpp(
+    ct_means = ct_means, group_size = group_size,
+    focal_group = as.integer(focal_group), n_focal = as.integer(group_size[focal_group]),
+    u = fit$U, se_u = fit$se_U, slope_rows = slope_rows, kernel_cov = kernel_cov,
+    responder_rows = responder_rows, responder_keep = as.integer(responder_keep),
+    responder_cov = responder_cov, intercept_rows = intercept_rows,
+    toff_var = if (use_bleed) stats$toff_var[focal_levels, gene_names, drop = FALSE] else empty_matrix,
+    spill_cov = spill_cov, beta_spill = beta_spill,
+    mu_mean = stats$mu_mean[focal_levels, gene_names, drop = FALSE],
+    alpha = unname(fit$alpha), nb1 = disp_model == "nb1", n_threads = threads)
 
-    ## Responder spatial state: the same form over the responder interaction terms.
-    V_state_responder <- rep(0, G)
-    if (has_resp) {
-      resp_term_names <- paste0(resp_term, ":", vars)
-      matched <- vapply(resp_term_names, function(nm) {
-        v <- term2t[[nm]]
-        if (is.null(v)) NA_integer_ else as.integer(v)
-      }, integer(1))
-      keep_v <- which(!is.na(matched))
-      if (length(keep_v)) {
-        resp_rows <- vapply(matched[keep_v], function(ti) ct_col(ti, c_idx), numeric(1))
-        S_r <- responder_cov[[c_name]][keep_v, keep_v, drop = FALSE]
-        R_slopes <- fit$U[resp_rows, , drop = FALSE]
-        RSE2 <- fit$se_U[resp_rows, , drop = FALSE]^2
-        V_state_responder <- colSums(R_slopes * (S_r %*% R_slopes)) +
-                             colSums(RSE2 * diag(S_r), na.rm = TRUE)
-      }
-    }
-
-    ## Spillover: per-cell contamination offset variance, else legacy _near effects.
-    V_spill <- if (use_bleed) {
-      as.numeric(stats$toff_var[c_name, gene_names])
-    } else if (length(spill_idx)) {
-      beta_spill <- fit$B[spill_idx, , drop = FALSE]
-      colSums(beta_spill * (spill_cov[[c_name]] %*% beta_spill))
-    } else rep(0, G)
-
-    mu_bar_c <- as.numeric(stats$mu_mean[c_name, gene_names])
-    alpha_g <- unname(fit$alpha)
-    V_disp <- if (disp_model == "nb1") {
-      log(1 + (1 + pmax(alpha_g, 0)) / pmax(mu_bar_c, 1e-9))
-    } else {
-      log(1 + 1 / pmax(mu_bar_c, 1e-9) + pmax(alpha_g, 0))
-    }
-
-    intercept_row <- ct_col(term2t[["(Intercept)"]], c_idx)
-    ct_offset_sq <- fit$U[intercept_row, ]^2 + fit$se_U[intercept_row, ]^2
-
-    tot_5 <- ct_offset_sq + V_state_baseline + V_state_responder + V_spill + V_disp
-    keep <- is.finite(tot_5) & tot_5 > 0
-    spec_g <- ifelse(is.finite(spec_focal), spec_focal, 0)
-    n_blocks <- n_blocks + 1L
-    rows_naka[[n_blocks]] <- tibble::tibble(
-      gene = gene_names, focal = c_name, n_focal = n_c,
-      V_state_baseline  = unname(V_state_baseline),
-      V_state_responder = unname(V_state_responder),
-      V_spill = unname(V_spill), V_disp = unname(V_disp),
-      celltype_offset_sq = unname(ct_offset_sq),
-      focal_mean = unname(fmean), max_other_mean = unname(other_max),
-      spec = unname(spec_g), focal_other_ratio = unname(foratio),
-      is_contaminated = unname(!is.finite(foratio) | foratio < 1),
-      `Cell type %`               = unname(ct_offset_sq      / tot_5 * 100),
-      `Spatial state %`           = unname(V_state_baseline  / tot_5 * 100),
-      `Responder spatial state %` = unname(V_state_responder / tot_5 * 100),
-      `Spillover %`               = unname(V_spill           / tot_5 * 100),
-      `Residual %`                = unname(V_disp            / tot_5 * 100)
-    )[keep, ]
-  }
-  gene_focal_5block <- dplyr::bind_rows(rows_naka[seq_len(n_blocks)])
+  keep <- blocks$keep == 1L
+  gene_focal_5block <- tibble::tibble(
+    gene = rep(gene_names, times = length(focal_levels)),
+    focal = rep(focal_levels, each = length(gene_names)),
+    n_focal = rep(as.integer(group_size[focal_group]), each = length(gene_names)),
+    V_state_baseline = blocks$V_state_baseline, V_state_responder = blocks$V_state_responder,
+    V_spill = blocks$V_spill, V_disp = blocks$V_disp,
+    celltype_offset_sq = blocks$celltype_offset_sq,
+    focal_mean = blocks$focal_mean, max_other_mean = blocks$max_other_mean,
+    spec = blocks$spec, focal_other_ratio = blocks$focal_other_ratio,
+    is_contaminated = blocks$is_contaminated == 1L,
+    `Cell type %`               = blocks$pct_celltype,
+    `Spatial state %`           = blocks$pct_state,
+    `Responder spatial state %` = blocks$pct_responder,
+    `Spillover %`               = blocks$pct_spill,
+    `Residual %`                = blocks$pct_residual)[keep, ]
   .pace_decomposition_aggregates(gene_focal_5block, weight_by_spec_sq, disp_model)
 }
 
 ## The aggregate tables of the decomposition (unchanged definitions from
-## mvpql_variance_decomposition_multi()).
+## mvpql_variance_decomposition_multi()): the arithmetic is
+## pace::decomposition_aggregates, and R only fixes the row order (the order
+## dplyr::group_by() would have produced) and names the columns.
 .pace_decomposition_aggregates <- function(gene_focal_5block, weight_by_spec_sq, disp_model) {
-  agg_focal_5block_mean <- gene_focal_5block |>
-    dplyr::group_by(.data$focal) |>
-    dplyr::summarise(
-      `Cell type %`               = mean(.data[["Cell type %"]],               na.rm = TRUE),
-      `Spatial state %`           = mean(.data[["Spatial state %"]],           na.rm = TRUE),
-      `Responder spatial state %` = mean(.data[["Responder spatial state %"]], na.rm = TRUE),
-      `Spillover %`               = mean(.data[["Spillover %"]],               na.rm = TRUE),
-      `Residual %`                = mean(.data[["Residual %"]],                na.rm = TRUE),
-      n_genes = dplyr::n(), .groups = "drop"
-    )
+  block_names <- c("Cell type %", "Spatial state %", "Responder spatial state %",
+                   "Spillover %", "Residual %")
+  component_names <- c("celltype_offset_sq", "V_state_baseline", "V_state_responder",
+                       "V_spill", "V_disp")
+  focal_levels <- dplyr::group_keys(dplyr::group_by(gene_focal_5block, .data$focal))$focal
+  focal_code <- match(gene_focal_5block$focal, focal_levels) - 1L
+  aggregates <- pace_decomposition_aggregates_cpp(
+    focal_code = as.integer(focal_code), n_focals = length(focal_levels),
+    pct = as.matrix(gene_focal_5block[, block_names]),
+    components = as.matrix(gene_focal_5block[, component_names]),
+    spec = gene_focal_5block$spec,
+    is_contaminated = as.integer(gene_focal_5block$is_contaminated),
+    weight_by_spec_sq = isTRUE(weight_by_spec_sq))
 
-  agg_focal_5block_specw <- if (isTRUE(weight_by_spec_sq)) {
-    gene_focal_5block |>
-      dplyr::group_by(.data$focal) |>
-      dplyr::summarise(
-        spec_w_sum = sum(.data$spec^2, na.rm = TRUE),
-        `Cell type %`               = sum(.data[["Cell type %"]]               * .data$spec^2, na.rm = TRUE) / pmax(spec_w_sum, 1e-12),
-        `Spatial state %`           = sum(.data[["Spatial state %"]]           * .data$spec^2, na.rm = TRUE) / pmax(spec_w_sum, 1e-12),
-        `Responder spatial state %` = sum(.data[["Responder spatial state %"]] * .data$spec^2, na.rm = TRUE) / pmax(spec_w_sum, 1e-12),
-        `Spillover %`               = sum(.data[["Spillover %"]]               * .data$spec^2, na.rm = TRUE) / pmax(spec_w_sum, 1e-12),
-        `Residual %`                = sum(.data[["Residual %"]]                * .data$spec^2, na.rm = TRUE) / pmax(spec_w_sum, 1e-12),
-        n_genes = dplyr::n(),
-        n_specific_genes = sum(!.data$is_contaminated, na.rm = TRUE),
-        .groups = "drop"
-      ) |>
-      dplyr::select(-"spec_w_sum")
-  } else NULL
+  as_table <- function(values) {
+    out <- tibble::tibble(focal = focal_levels)
+    for (b in seq_along(block_names)) out[[block_names[b]]] <- values[, b]
+    out
+  }
+  agg_focal_5block_mean <- as_table(aggregates$mean)
+  agg_focal_5block_mean$n_genes <- aggregates$n_genes
 
-  gene_focal_5block <- gene_focal_5block |>
-    dplyr::mutate(Total =
-      .data$V_state_baseline + .data$V_state_responder + .data$V_spill + .data$V_disp +
-      .data$celltype_offset_sq)
+  agg_focal_5block_specw <- NULL
+  if (isTRUE(weight_by_spec_sq)) {
+    agg_focal_5block_specw <- as_table(aggregates$specw)
+    agg_focal_5block_specw$n_genes <- aggregates$n_genes
+    agg_focal_5block_specw$n_specific_genes <- aggregates$n_specific_genes
+  }
 
-  agg_focal_5block_pooled <- gene_focal_5block |>
-    dplyr::group_by(.data$focal) |>
-    dplyr::summarise(
-      total_SS = sum(.data$Total, na.rm = TRUE),
-      `Cell type %`               = 100 * sum(.data$celltype_offset_sq, na.rm = TRUE) / pmax(sum(.data$Total, na.rm = TRUE), 1e-12),
-      `Spatial state %`           = 100 * sum(.data$V_state_baseline,   na.rm = TRUE) / pmax(sum(.data$Total, na.rm = TRUE), 1e-12),
-      `Responder spatial state %` = 100 * sum(.data$V_state_responder,  na.rm = TRUE) / pmax(sum(.data$Total, na.rm = TRUE), 1e-12),
-      `Spillover %`               = 100 * sum(.data$V_spill,            na.rm = TRUE) / pmax(sum(.data$Total, na.rm = TRUE), 1e-12),
-      `Residual %`                = 100 * sum(.data$V_disp,             na.rm = TRUE) / pmax(sum(.data$Total, na.rm = TRUE), 1e-12),
-      n_genes = dplyr::n(),
-      .groups = "drop"
-    )
+  gene_focal_5block$Total <- aggregates$Total
+  agg_focal_5block_pooled <- tibble::tibble(focal = focal_levels, total_SS = aggregates$total_SS)
+  for (b in seq_along(block_names))
+    agg_focal_5block_pooled[[block_names[b]]] <- aggregates$pooled[, b]
+  agg_focal_5block_pooled$n_genes <- aggregates$n_genes
 
   list(
     gene_focal_5block       = gene_focal_5block,

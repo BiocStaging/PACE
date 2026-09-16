@@ -92,7 +92,8 @@
     if (!methods::is(Y, "dgCMatrix"))
       Y <- methods::as(methods::as(methods::as(Y, "dMatrix"), "generalMatrix"), "CsparseMatrix")
   }
-  if (!all(is.finite(Y@x)))
+  ## the same check as all(is.finite(Y@x)), without R's logical copy of it
+  if (!pace_all_finite_cpp(Y@x))
     stop("counts must be finite (no NA, NaN or Inf).", call. = FALSE)
   Y
 }
@@ -687,20 +688,20 @@ pace_decompose <- function(fit, df, Y, types, X_fixed, resp_term = NULL, stats, 
     fit = fit, stats = stats, df = df, Y = Y, vars = types,
     X_fixed = X_fixed, resp_term = resp_term, focal_levels = types, threads = threads)
   g5 <- dec$gene_focal_5block
-  total4 <- with(g5, celltype_offset_sq + V_state_baseline + V_state_responder +
-                     V_spill + V_disp)
+  four <- pace_four_block_shares_cpp(g5$celltype_offset_sq, g5$V_state_baseline,
+                                     g5$V_state_responder, g5$V_spill, g5$V_disp)
   dec$gene_focal_4block <- tibble::tibble(
     focal = g5$focal,
     gene  = g5$gene,
-    `Cell type %`     = 100 * g5$celltype_offset_sq / pmax(total4, 1e-12),
-    `Spatial state %` = 100 * (g5$V_state_baseline + g5$V_state_responder) / pmax(total4, 1e-12),
-    `Spillover %`     = 100 * g5$V_spill / pmax(total4, 1e-12),
-    `Residual %`      = 100 * g5$V_disp  / pmax(total4, 1e-12),
+    `Cell type %`     = four$pct_celltype,
+    `Spatial state %` = four$pct_state,
+    `Spillover %`     = four$pct_spill,
+    `Residual %`      = four$pct_residual,
     celltype_offset_sq = g5$celltype_offset_sq,
-    V_state = g5$V_state_baseline + g5$V_state_responder,
+    V_state = four$V_state,
     V_spill = g5$V_spill,
     V_disp  = g5$V_disp,
-    Total   = total4,
+    Total   = four$Total,
     spec       = g5$spec,
     focal_mean = g5$focal_mean)
   dec
@@ -722,11 +723,49 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = N
     for (fc in types) for (nc in types) if (fc != nc) pairs <- c(pairs, list(c(fc, nc)))
   }
   g5 <- dec$gene_focal_5block
-  Z_re <- fit$re_meta$Z
-  cells_by_ct <- lapply(types, function(c) which(Z_re[, paste0(c, "::(Intercept)")] != 0))
+  Z_re <- .pace_as_dgc(fit$re_meta$Z)
+  cells_by_ct <- lapply(types, function(c)
+    pace_column_nonzero_rows_cpp(Z_re, match(paste0(c, "::(Intercept)"), colnames(Z_re))))
   names(cells_by_ct) <- types
   alpha_g <- pmax(fit$alpha, 0)
   gene_names_fit <- colnames(fit$U)
+  has_resp <- !is.null(resp_term)
+
+  ## One covariance per focal, over its own cells and all its neighbour columns:
+  ## the diagonal is var(N_t) for each neighbour, and with the condition
+  ## indicator as the row scale it is var(R N_t). Computing them per focal rather
+  ## than per pair keeps the sparse reads to one pass per focal.
+  pair_variances <- lapply(types, function(fc) {
+    cells_c <- cells_by_ct[[fc]]
+    columns <- match(paste0(fc, "::", types), colnames(Z_re))
+    present <- which(!is.na(columns))
+    var_n <- stats::setNames(rep(NA_real_, length(types)), types)
+    var_rn <- var_n
+    if (length(present) && length(cells_c) > 1L) {
+      var_n[present] <- diag(pace_subset_covariance_cpp(Z_re, cells_c, columns[present], numeric(0)))
+      if (has_resp) {
+        col_R <- match(paste0(fc, "::", resp_term), colnames(Z_re))
+        responder <- if (is.na(col_R)) {
+          if (is.null(resp_dummy)) rep(0, length(cells_c)) else resp_dummy[cells_c]
+        } else pace_subset_column_cpp(Z_re, cells_c, col_R)
+        var_rn[present] <- diag(pace_subset_covariance_cpp(Z_re, cells_c, columns[present], responder))
+      }
+    }
+    list(columns = columns, var_n = var_n, var_rn = var_rn)
+  })
+  names(pair_variances) <- types
+
+  ## The long slopes table split once by (focal, neighbour, term), and the
+  ## decomposition once by focal. Scanning both per pair meant 210 passes over a
+  ## 70k-row table on a 15-type fit, which cost hundreds of MB of churn.
+  slopes_by_pair <- split(shrunken_long,
+                          paste(shrunken_long$focal, shrunken_long$neighbour, shrunken_long$term,
+                                sep = "\r"))
+  blocks_by_focal <- split(g5[, c("gene", "spec", "focal_mean")], as.character(g5$focal))
+  rows_or_none <- function(index, key) {
+    rows <- index[[key]]
+    if (is.null(rows)) index[[1L]][0, ] else rows
+  }
 
   out <- list()
   for (p in pairs) {
@@ -734,43 +773,65 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = N
     nc <- p[2]
     pk <- paste(fc, nc, sep = "_")
     target_term <- if (is.null(resp_term)) nc else paste0(resp_term, ":", nc)
-    s <- shrunken_long |>
-      dplyr::filter(focal == fc, neighbour == nc, term == target_term) |>
+    s <- rows_or_none(slopes_by_pair, paste(fc, nc, target_term, sep = "\r")) |>
       dplyr::distinct(gene, .keep_all = TRUE)
-    fm <- g5 |>
-      dplyr::filter(focal == fc) |>
-      dplyr::select(gene, spec, focal_mean) |>
+    fm <- rows_or_none(blocks_by_focal, fc) |>
       dplyr::distinct(gene, .keep_all = TRUE)
     if (!nrow(s) || !nrow(fm)) next
 
-    cells_c <- cells_by_ct[[fc]]
-    col_N <- paste0(fc, "::", nc)
-    if (!col_N %in% colnames(Z_re)) {
+    nb_index <- match(nc, types)
+    col_N <- if (is.na(nb_index)) NA_integer_ else pair_variances[[fc]]$columns[nb_index]
+    if (is.na(col_N)) {
       out[[pk]] <- list(scores = s[0, ], status = "dropped (n_eff)",
                         expected_false_sign = 0, false_sign_rate = NA_real_)
       next
     }
-    N_t <- as.numeric(Z_re[cells_c, col_N])
-    var_N <- stats::var(N_t, na.rm = TRUE)
+    var_N <- pair_variances[[fc]]$var_n[[nb_index]]
     mu_bar_per_gene <- mu_means[fc, ]
     names(alpha_g) <- gene_names_fit
     names(mu_bar_per_gene) <- gene_names_fit
 
+    ## inner_join(s, fm, by = "gene"): both are distinct by gene, so the join is
+    ## one-to-one and match() does it without a hash table per pair.
+    hit <- match(s$gene, fm$gene)
+    s <- s[!is.na(hit), , drop = FALSE]
+    hit <- hit[!is.na(hit)]
     base <- s |>
-      dplyr::inner_join(fm, by = "gene") |>
+      dplyr::mutate(spec = fm$spec[hit], focal_mean = fm$focal_mean[hit],
+                    mu_bar = mu_bar_per_gene[gene], alpha = alpha_g[gene])
+    var_RN <- 0
+    u_raw_vec <- numeric(0)
+    if (has_resp) {
+      ## condition x spatial: baseline slope V_S (from the raw BLUP u) plus the
+      ## condition-interaction slope V_RxS (from the shrunken estimate).
+      var_RN <- pair_variances[[fc]]$var_rn[[nb_index]]
+      row_u <- match(colnames(Z_re)[col_N], rownames(fit$U))
+      u_vec <- if (is.na(row_u))
+        setNames(rep(0, length(gene_names_fit)), gene_names_fit)
+      else setNames(as.numeric(fit$U[row_u, ]), gene_names_fit)
+      u_raw_vec <- u_vec[base$gene]
+    }
+    scores <- pace_driver_scores_cpp(base$estimate_shrunk, base$spec, base$focal_mean,
+                                     base$mu_bar, base$alpha, u_raw_vec, var_N, var_RN, has_resp)
+    ## The vectorised expressions this replaces carried the gene names of their
+    ## named inputs into the derived columns, and the stored tables of older fits
+    ## have them, so each column keeps the names of its first named input.
+    named_by <- function(values, ...) {
+      for (source in list(...)) {
+        if (!is.null(names(source))) return(stats::setNames(values, names(source)))
+      }
+      values
+    }
+    base <- base |>
       dplyr::mutate(
-        MCSD    = (estimate_shrunk^2) * (spec^2) * pmax(focal_mean, 0),
-        MCSD4   = (estimate_shrunk^2) * (spec^4) * pmax(focal_mean, 0),
-        mu_bar  = mu_bar_per_gene[gene],
-        alpha   = alpha_g[gene],
-        V_resid = log(1 + (1 + pmax(alpha, 0)) / pmax(mu_bar, 1e-6)))
-    if (is.null(resp_term)) {
-      ## baseline neighbour effect only (no condition).
-      res_all <- base |>
-        dplyr::mutate(V_S = estimate_shrunk^2 * var_N,
-                      V_total = V_S + V_resid,
-                      R2_S = V_S / pmax(V_total, 1e-12))
-      res <- res_all |>
+        MCSD    = named_by(scores$MCSD, spec, focal_mean),
+        MCSD4   = named_by(scores$MCSD4, spec, focal_mean),
+        V_resid = named_by(scores$V_resid, alpha, mu_bar),
+        V_S     = if (has_resp) named_by(scores$V_S, u_raw_vec) else scores$V_S,
+        V_total = named_by(scores$V_total, u_raw_vec, alpha, mu_bar),
+        R2_S    = named_by(scores$R2_S, u_raw_vec, alpha, mu_bar))
+    if (!has_resp) {
+      res <- base |>
         dplyr::filter(lfsr < 0.05) |>
         dplyr::arrange(dplyr::desc(MCSD)) |>
         dplyr::mutate(rank = dplyr::row_number()) |>
@@ -778,25 +839,11 @@ pace_top_drivers <- function(fit, shrunken_long, dec, types, mu_means, pairs = N
         dplyr::select(rank, gene, MCSD, MCSD4, b_clean, spec, focal_mean,
                       R2_S, mu_bar, alpha, V_S, V_resid, V_total, lfsr, sd_shrunk)
     } else {
-      ## condition x spatial: baseline slope V_S (from the raw BLUP u) plus the
-      ## condition-interaction slope V_RxS (from the shrunken estimate).
-      col_R <- match(paste0(fc, "::", resp_term), colnames(Z_re))
-      R_c <- if (is.na(col_R)) {
-        if (is.null(resp_dummy)) rep(0, length(cells_c)) else resp_dummy[cells_c]
-      } else as.numeric(Z_re[cells_c, col_R])
-      var_RN <- stats::var(R_c * N_t, na.rm = TRUE)
-      row_u <- match(col_N, rownames(fit$U))
-      u_vec <- if (is.na(row_u))
-        setNames(rep(0, length(gene_names_fit)), gene_names_fit)
-      else setNames(as.numeric(fit$U[row_u, ]), gene_names_fit)
-      res_all <- base |>
-        dplyr::mutate(u_raw   = u_vec[gene],
-                      V_S     = u_raw^2 * var_N,
-                      V_RxS   = estimate_shrunk^2 * var_RN,
-                      V_total = V_S + V_RxS + V_resid,
-                      R2_S    = V_S   / pmax(V_total, 1e-12),
-                      R2_RxS  = V_RxS / pmax(V_total, 1e-12))
-      res <- res_all |>
+      base <- base |>
+        dplyr::mutate(u_raw  = u_raw_vec,
+                      V_RxS  = scores$V_RxS,
+                      R2_RxS = named_by(scores$R2_RxS, u_raw_vec, alpha, mu_bar))
+      res <- base |>
         dplyr::filter(lfsr < 0.05) |>
         dplyr::arrange(dplyr::desc(MCSD)) |>
         dplyr::mutate(rank = dplyr::row_number()) |>

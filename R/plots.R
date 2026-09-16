@@ -20,25 +20,24 @@
          gene_focal_single_frame = object@varianceDecomposition$perGene))
 }
 
-## SS-weighted per-focal block table (Goldstein pooling), from the single frame.
+## SS-weighted per-focal block table (Goldstein pooling), from the single frame:
+## each block's percentage back to a sum of squares, pooled over genes, and back
+## to a percentage. The pooling is pace::single_frame_focal_blocks; R names the
+## blocks and fixes the focal order dplyr::group_by() would have produced.
 .pace_focal_blocks <- function(sf) {
   has_resp <- "Responder spatial %" %in% names(sf)
-  fb <- sf |>
-    dplyr::mutate(
-      ss_cell = .data[["Cell type %"]] / 100 * .data$denom,
-      ss_sp   = .data[["Spatial %"]]   / 100 * .data$denom,
-      ss_bl   = .data[["Spillover %"]] / 100 * .data$denom,
-      ss_rs   = .data[["Residual %"]]  / 100 * .data$denom,
-      ss_rsp  = if (has_resp) .data[["Responder spatial %"]] / 100 * .data$denom
-                else 0) |>
-    dplyr::group_by(.data$focal) |>
-    dplyr::summarise(
-      `Cell type`               = 100 * sum(.data$ss_cell) / sum(.data$denom),
-      `Spatial cell state`      = 100 * sum(.data$ss_sp)   / sum(.data$denom),
-      `Responder spatial state` = 100 * sum(.data$ss_rsp)  / sum(.data$denom),
-      `Spillover`               = 100 * sum(.data$ss_bl)   / sum(.data$denom),
-      `Residual`                = 100 * sum(.data$ss_rs)   / sum(.data$denom),
-      .groups = "drop")
+  block_names <- c("Cell type", "Spatial cell state", "Responder spatial state",
+                   "Spillover", "Residual")
+  share_names <- c("Cell type %", "Spatial %", "Responder spatial %", "Spillover %", "Residual %")
+  shares <- matrix(0, nrow(sf), length(share_names))
+  for (b in seq_along(share_names)) {
+    if (share_names[b] %in% names(sf)) shares[, b] <- sf[[share_names[b]]]
+  }
+  focal_levels <- dplyr::group_keys(dplyr::group_by(sf, .data$focal))$focal
+  pooled <- pace_single_frame_focal_blocks_cpp(
+    as.integer(match(sf$focal, focal_levels) - 1L), length(focal_levels), shares, sf$denom)
+  fb <- tibble::tibble(focal = focal_levels)
+  for (b in seq_along(block_names)) fb[[block_names[b]]] <- pooled[, b]
   if (!has_resp) fb[["Responder spatial state"]] <- NULL
   fb
 }
@@ -49,7 +48,7 @@
 pace_pair_variance_pratt <- function(mv, cond_prefix = NULL, focals = NULL,
                                      cohort_label = "cohort", block_label = NULL) {
   fit <- mv$fit
-  Z <- fit$re_meta$Z
+  Z <- .pace_as_dgc(fit$re_meta$Z)
   gn <- mv$gene_set
   colnames(fit$U) <- gn
   TYPES <- if (!is.null(fit$re_meta$blocks))
@@ -65,7 +64,7 @@ pace_pair_variance_pratt <- function(mv, cond_prefix = NULL, focals = NULL,
   for (fc in focals) {
     fc_int <- paste0(fc, "::(Intercept)")
     if (!(fc_int %in% colnames(Z))) next
-    cells <- which(as.numeric(Z[, fc_int]) != 0)
+    cells <- pace_column_nonzero_rows_cpp(Z, match(fc_int, colnames(Z)))
     if (length(cells) < 50) next
     term_names <- if (is.null(cond_prefix))
                     paste0(fc, "::", TYPES)
@@ -74,34 +73,29 @@ pace_pair_variance_pratt <- function(mv, cond_prefix = NULL, focals = NULL,
     if (!any(keep)) next
     tn <- term_names[keep]
     tt <- TYPES[keep]
-    Z_fc <- as.matrix(Z[cells, tn, drop = FALSE])
-    Sigma_K <- stats::cov(Z_fc)
-    U_c <- as.matrix(fit$U[tn, , drop = FALSE]); U_c[!is.finite(U_c)] <- 0
-    SU <- Sigma_K %*% U_c
-    V_pair_gene <- U_c * SU
-    V_pair_t <- as.numeric(rowSums(V_pair_gene))
-    V_pratt_total <- sum(V_pair_t)
-    V_diag_t <- as.numeric(rowSums(U_c^2) * diag(Sigma_K))
-    V_diag_total <- sum(V_diag_t)
+    ## Sigma = cov of the focal's kernel columns; the attribution is pace::pair_variance_pratt
+    ## (which reads non-finite BLUPs as zero, as this function always has).
+    Sigma_K <- pace_subset_covariance_cpp(Z, cells, match(tn, colnames(Z)), numeric(0))
+    pratt <- pace_pair_variance_pratt_cpp(Sigma_K, as.matrix(fit$U[tn, , drop = FALSE]))
 
     for (i in seq_along(tt)) {
       pair_rows[[length(pair_rows) + 1]] <- data.frame(
         cohort = cohort_label, block = block_label,
         focal = fc, neighbour = tt[i],
-        V_pair_pratt = V_pair_t[i],
-        V_pair_diag  = V_diag_t[i],
-        within_focal_share_pct = 100 * V_pair_t[i] / V_pratt_total,
-        within_focal_diag_pct  = 100 * V_diag_t[i] / V_diag_total,
-        sign = sign(V_pair_t[i]),
+        V_pair_pratt = pratt$V_pair_pratt[i],
+        V_pair_diag  = pratt$V_pair_diag[i],
+        within_focal_share_pct = pratt$within_focal_share_pct[i],
+        within_focal_diag_pct  = pratt$within_focal_diag_pct[i],
+        sign = pratt$sign[i],
         stringsAsFactors = FALSE)
     }
     focal_rows[[length(focal_rows) + 1]] <- data.frame(
       cohort = cohort_label, block = block_label, focal = fc,
       n_cells = length(cells),
-      V_block_pratt = V_pratt_total,
-      V_block_diag  = V_diag_total,
-      cross_cov_pct = 100 * (V_pratt_total - V_diag_total) / V_pratt_total,
-      n_negative_pairs = sum(V_pair_t < 0),
+      V_block_pratt = pratt$V_block_pratt,
+      V_block_diag  = pratt$V_block_diag,
+      cross_cov_pct = pratt$cross_cov_pct,
+      n_negative_pairs = pratt$n_negative_pairs,
       stringsAsFactors = FALSE)
   }
   list(pair_long = do.call(rbind, pair_rows),

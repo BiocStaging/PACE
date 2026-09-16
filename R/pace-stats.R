@@ -13,6 +13,8 @@
 ## Sources, in order: the statistics the solver stored at fit time (fit$stats);
 ## the n x G matrices of an older fit that retains them; or, for a stripped older
 ## fit, a rebuild of mu a block of genes at a time from the fit and the counts.
+## The two moments themselves are computed in C++ (pace::dense_group_moments);
+## the functions here select the source and label the result.
 
 ## The statistics record shared by both solvers and the legacy paths.
 .pace_statistics_record <- function(cell_types, n_type, mu_mean, toff_var, toff_any_nonzero) {
@@ -24,44 +26,51 @@
        toff_any_nonzero = isTRUE(toff_any_nonzero))
 }
 
+## Per-cell-type moments of one dense block: the mean of `mu` and the variance of
+## `toff` over each type's cells, per gene, as mean()/stats::var() computed them.
+## `toff = NULL` stands for an all-zero offset and costs no allocation.
+.pace_block_moments <- function(mu, toff, type_code, n_types, threads = 1L) {
+  threads <- .pace_thread_count(threads)
+  empty <- matrix(0, 0, 0)
+  mu_stats <- pace_dense_group_moments_cpp(mu, nrow(mu), ncol(mu), type_code, n_types,
+                                           want_mean = TRUE, want_variance = FALSE,
+                                           n_threads = threads)
+  toff_stats <- pace_dense_group_moments_cpp(if (is.null(toff)) empty else toff,
+                                             nrow(mu), ncol(mu), type_code, n_types,
+                                             want_mean = FALSE, want_variance = TRUE,
+                                             n_threads = threads)
+  list(mu_mean = mu_stats$mean, toff_var = toff_stats$variance,
+       toff_any_nonzero = isTRUE(toff_stats$any_nonzero))
+}
+
 ## Statistics from full n x G matrices (a solver's own, or an older fit's stored
-## ones). Gene by gene, so no further n x G copy is made:
-##   mu_mean  = mean(mu[cells, g], na.rm = TRUE)
-##   toff_var = stats::var(toff[cells, g], na.rm = TRUE)
-## `celltype` is the per-cell label, `cell_types` the rows of the result.
-.pace_statistics_from_matrices <- function(mu, toff, celltype, cell_types, gene_names = colnames(mu)) {
-  n_genes <- ncol(mu)
-  cells_by_type <- lapply(cell_types, function(type) which(celltype == type))
-  mu_mean <- matrix(0, length(cell_types), n_genes, dimnames = list(cell_types, gene_names))
-  toff_var <- matrix(NA_real_, length(cell_types), n_genes, dimnames = list(cell_types, gene_names))
-  toff_any_nonzero <- FALSE
-  for (g in seq_len(n_genes)) {
-    mu_column <- mu[, g]
-    toff_column <- if (is.null(toff)) numeric(nrow(mu)) else toff[, g]
-    toff_any_nonzero <- toff_any_nonzero || any(toff_column != 0, na.rm = TRUE)
-    for (ci in seq_along(cell_types)) {
-      rows <- cells_by_type[[ci]]
-      if (!length(rows)) next
-      mu_mean[ci, g] <- mean(mu_column[rows], na.rm = TRUE)
-      toff_var[ci, g] <- stats::var(toff_column[rows], na.rm = TRUE)
-    }
-  }
-  .pace_statistics_record(cell_types, lengths(cells_by_type), mu_mean, toff_var, toff_any_nonzero)
+## ones). `celltype` is the per-cell label, `cell_types` the rows of the result.
+## A cell type with no cells keeps the mean 0 the fit record has always held.
+.pace_statistics_from_matrices <- function(mu, toff, celltype, cell_types, gene_names = colnames(mu),
+                                           threads = 1L) {
+  type_code <- .pace_codes(celltype, cell_types)
+  moments <- .pace_block_moments(mu, toff, type_code, length(cell_types), threads)
+  n_type <- tabulate(type_code + 1L, nbins = length(cell_types))
+  moments$mu_mean[n_type == 0L, ] <- 0
+  dimnames(moments$mu_mean) <- list(cell_types, gene_names)
+  dimnames(moments$toff_var) <- list(cell_types, gene_names)
+  .pace_statistics_record(cell_types, n_type, moments$mu_mean, moments$toff_var,
+                          moments$toff_any_nonzero)
 }
 
 ## Statistics for a stripped fit, rebuilding mu from the fit and the counts a
 ## block of genes at a time (all cells, `genes_per_block` genes), so memory is
 ## n x genes_per_block rather than n x G. Same rebuild formula as the solver's
 ## final pass (.pace_mu_block()).
-.pace_statistics_by_rebuild <- function(object, spe, max_block_entries = 5e6) {
+.pace_statistics_by_rebuild <- function(object, spe, max_block_entries = 5e6, threads = 1L) {
   df <- object@context$df
   genes <- object@context$genes
   cell_types <- object@cellTypes
-  celltype <- as.character(df$celltype)
   n_cells <- nrow(df)
   inputs <- .pace_mu_inputs(object, spe)
   genes_per_block <- max(1L, as.integer(floor(max_block_entries / max(n_cells, 1L))))
-  cells_by_type <- lapply(cell_types, function(type) which(celltype == type))
+  type_code <- .pace_codes(as.character(df$celltype), cell_types)
+  n_type <- tabulate(type_code + 1L, nbins = length(cell_types))
   mu_mean <- matrix(0, length(cell_types), length(genes), dimnames = list(cell_types, genes))
   toff_var <- matrix(NA_real_, length(cell_types), length(genes), dimnames = list(cell_types, genes))
   toff_any_nonzero <- FALSE
@@ -70,21 +79,19 @@
     block <- .pace_mu_block(object, NULL, inputs, gene_idx = gene_idx)
     if (is.null(block$mu_spill)) {
       mu_block <- block$mu_bio
-      toff_block <- matrix(0, nrow(mu_block), ncol(mu_block))
+      toff_block <- NULL
     } else {
       mu_block <- pmax(block$mu_bio + block$mu_spill, 1e-6)
       toff_block <- log1p(block$mu_spill / block$mu_bio)
     }
-    toff_any_nonzero <- toff_any_nonzero || any(toff_block != 0, na.rm = TRUE)
-    for (ci in seq_along(cell_types)) {
-      rows <- cells_by_type[[ci]]
-      if (!length(rows)) next
-      mu_mean[ci, gene_idx] <- apply(mu_block[rows, , drop = FALSE], 2, mean, na.rm = TRUE)
-      toff_var[ci, gene_idx] <- apply(toff_block[rows, , drop = FALSE], 2, stats::var, na.rm = TRUE)
-    }
+    moments <- .pace_block_moments(mu_block, toff_block, type_code, length(cell_types), threads)
+    mu_mean[, gene_idx] <- moments$mu_mean
+    toff_var[, gene_idx] <- moments$toff_var
+    toff_any_nonzero <- toff_any_nonzero || moments$toff_any_nonzero
     rm(block, mu_block, toff_block)
   }
-  .pace_statistics_record(cell_types, lengths(cells_by_type), mu_mean, toff_var, toff_any_nonzero)
+  mu_mean[n_type == 0L, ] <- 0
+  .pace_statistics_record(cell_types, n_type, mu_mean, toff_var, toff_any_nonzero)
 }
 
 ## The per-cell-type statistics of a fit, from the best available source.
@@ -109,21 +116,19 @@
   if (ncol(counts) != nrow(df))
     stop("`spe` has ", ncol(counts), " cells but the fit has ", nrow(df),
          "; pass the same object used for paceModel().", call. = FALSE)
-  .pace_as_dgc(Matrix::t(counts[object@context$genes, , drop = FALSE]))
+  ## subset only when the fit used a subset: `counts[genes, ]` is a full copy
+  if (!identical(rownames(counts), object@context$genes))
+    counts <- counts[object@context$genes, , drop = FALSE]
+  .pace_as_dgc(Matrix::t(counts))
 }
 
 ## Per-group covariance matrices of the columns of `values` (n x p), computed in
-## C++ exactly as stats::cov(values[group == g, , drop = FALSE]). Returns a list
-## of p x p matrices named by `groups`.
+## C++ exactly as stats::cov(values[group == g, , drop = FALSE]). Returns the
+## p x p x n_groups array the decomposition core reads, slice g being group g.
 .pace_group_covariances <- function(values, group, groups, threads = 1L) {
   values <- as.matrix(values)
   storage.mode(values) <- "double"
   codes <- .pace_codes(as.character(group), groups)
-  covariance <- pace_group_covariances_cpp(values, codes, length(groups),
-                                           n_threads = .pace_thread_count(threads))
-  out <- lapply(seq_along(groups), function(g) {
-    matrix(covariance[, , g], ncol(values), ncol(values),
-           dimnames = list(colnames(values), colnames(values)))
-  })
-  stats::setNames(out, groups)
+  pace_group_covariances_cpp(values, codes, length(groups),
+                             n_threads = .pace_thread_count(threads))
 }
