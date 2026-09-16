@@ -734,8 +734,8 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ct_levels    <- if (length(ct_block_idx) == 1L) re$blocks[[ct_block_idx]]$group_levels
                   else sort(unique(as.character(df$celltype)))
   ct_chr       <- as.character(df$celltype)
-  cells_by_ct  <- lapply(ct_levels, function(c) which(ct_chr == c))
-  names(cells_by_ct) <- ct_levels
+  ct_code      <- .pace_codes(ct_chr, ct_levels)
+  n_by_ct      <- stats::setNames(tabulate(ct_code + 1L, nbins = length(ct_levels)), ct_levels)
 
   mu_celltype_sum <- matrix(0, length(ct_levels), g_n,
                             dimnames = list(ct_levels, colnames(Y)))
@@ -753,35 +753,30 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   toff_var <- matrix(NA_real_, length(ct_levels), g_n, dimnames = list(ct_levels, colnames(Y)))
   toff_any_nonzero <- FALSE
 
+  ## Everything this chunk contributes is built and accumulated in C++
+  ## (pace::final_pass_statistics): the two fitted-mean parts, the contamination
+  ## log-offset, the per-type sums and offset variances, and the per-cell
+  ## contamination sums. R holds only eta and the ambient chunk.
   chk_starts <- seq.int(1L, g_n, by = max(1L, as.integer(chunk_size)))
   for (cs in chk_starts) {
     gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
     a_chk      <- .a_chunk(gene_idx_chk)
     eta_chk    <- .xb_chunk(B, gene_idx_chk) +
                   as.matrix(Z %*% U[, gene_idx_chk, drop = FALSE])
-    mu_bio_chk <- pmax(exp(eta_chk + offset_vec), 1e-6)
-    mu_spill_chk <- pmax(a_chk * add_rho, 0)   ## SPEED 3: row-scale (== sweep .,1,.,"*")
-    mu_chk     <- pmax(mu_bio_chk + mu_spill_chk, 1e-6)
-    ## technical_offset_mat = log1p(mu_spill / mu_bio)  (dense line ~372).
-    toff_chk   <- log1p(mu_spill_chk / mu_bio_chk)
-    for (ci in seq_along(ct_levels)) {
-      rr <- cells_by_ct[[ci]]
-      if (length(rr)) {
-        mu_celltype_sum[ci, gene_idx_chk] <- colSums(mu_chk[rr, , drop = FALSE])
-        toff_var[ci, gene_idx_chk] <- apply(toff_chk[rr, , drop = FALSE], 2, stats::var, na.rm = TRUE)
-      }
-    }
-    toff_any_nonzero <- toff_any_nonzero || any(toff_chk != 0, na.rm = TRUE)
-    mu_global_sum[gene_idx_chk] <- colSums(mu_chk)
-    contam_spill_sum <- contam_spill_sum + rowSums(mu_spill_chk)
-    contam_tot_sum   <- contam_tot_sum   + rowSums(mu_chk)
+    pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_chk, add_rho,
+                                           ct_code, length(ct_levels), return_mu)
+    mu_celltype_sum[, gene_idx_chk] <- pass$mu_group_sum
+    toff_var[, gene_idx_chk] <- pass$toff_variance
+    toff_any_nonzero <- toff_any_nonzero || pass$any_nonzero
+    mu_global_sum[gene_idx_chk] <- pass$mu_column_sum
+    contam_spill_sum <- contam_spill_sum + pass$spill_row_sum
+    contam_tot_sum   <- contam_tot_sum   + pass$total_row_sum
     if (return_mu) {
-      mu_full[, gene_idx_chk]   <- mu_chk
-      toff_full[, gene_idx_chk] <- toff_chk
+      mu_full[, gene_idx_chk]   <- pass$mu
+      toff_full[, gene_idx_chk] <- pass$toff
     }
-    rm(a_chk, eta_chk, mu_bio_chk, mu_spill_chk, mu_chk, toff_chk)
+    rm(a_chk, eta_chk, pass)
   }
-  n_by_ct <- vapply(cells_by_ct, length, integer(1))
   mu_celltype_means <- mu_celltype_sum / pmax(n_by_ct, 1L)
   mu_global_mean    <- mu_global_sum / n
   ## Same definition as the [percell_bleed] fitting-trace diagnostic above.
