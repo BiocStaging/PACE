@@ -185,15 +185,22 @@ setMethod(
 #'   cell types under the null and pass it to mash as `V`; `FALSE` treats them
 #'   as independent), `data_driven`, and `shrink_threads`.
 #'
-#'   `shrink_threads` (default 1) is how many R processes shrink the neighbour
+#'   `shrink_threads` (default 4) is how many R processes shrink the neighbour
 #'   slices at once. The slices are independent and carry about 90% of the work,
-#'   so this is where the time goes. It is 1 by default because with
-#'   `data_driven = TRUE` the parallel path cannot reproduce the serial one:
-#'   `cov_pca()` draws its starting vectors from the RNG, and a serial run
-#'   consumes that stream slice by slice. Above 1 each slice is seeded with its
-#'   own index, so the parallel result is reproducible run to run but differs
-#'   from the serial one. With `data_driven = FALSE` nothing draws from the
-#'   stream and the two are identical.
+#'   so this is where the time goes: on the full breast cancer cohort it takes
+#'   the shrinkage from 55.4 to 21.1 seconds, and the called slopes agree with
+#'   the serial path to 8.3e-13 with identical calls and no sign flips.
+#'
+#'   It is not, however, the serial computation. With `data_driven = TRUE`
+#'   the parallel path cannot reproduce the serial one: `cov_pca()` draws its
+#'   starting vectors from the RNG, and a serial run consumes that stream slice
+#'   by slice. Above 1 each slice is seeded with its own index, so the parallel
+#'   result is reproducible run to run but differs from the serial one -- by
+#'   ~1e-12 at cohort scale, but by up to ~1e-6 on small slices, where there is
+#'   less data to swamp the difference. Set `shrink_threads = 1` when you need
+#'   the serial stream exactly, which is what the package's own fixture tests
+#'   do. With `data_driven = FALSE` nothing draws from the stream and the two
+#'   are identical.
 #' @return The `PACEFit` with the shrunken neighbour slopes added.
 #' @examples
 #' fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
