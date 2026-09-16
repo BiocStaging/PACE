@@ -1,4 +1,6 @@
 // decomposition.cpp -- implementation of decomposition.hpp.
+#include "fp_no_contract.hpp"  // must precede the arithmetic below
+
 #include "decomposition.hpp"
 
 #include <algorithm>
@@ -52,10 +54,11 @@ double quadratic_form(const double* s, const double* b, const double* se_squared
 // must be strictly increasing (they come from a column's own row indices). Both
 // sides are walked once, so nothing of the matrix's height is allocated.
 Status gather_column(const CscView& matrix, Span<const int> rows, int column, Span<double> values) {
-  const int j = column - 1;
-  if (j < 0 || j >= matrix.n_cols) {
+  // checked before the shift, so R's NA_integer_ cannot overflow on the way in
+  if (column < 1 || column > matrix.n_cols) {
     return Status::failure(StatusCode::invalid_argument, "column index out of range");
   }
+  const int j = column - 1;
   for (std::int64_t r = 0; r < rows.size; ++r) {
     if (rows[r] < 1 || rows[r] > matrix.n_rows) {
       return Status::failure(StatusCode::invalid_argument, "row index out of range");
@@ -116,6 +119,32 @@ Status variance_decomposition(const DecompositionInput& in, const DecompositionO
   }
   if (out.v_state_baseline.size != rows || out.keep.size != rows) {
     return Status::failure(StatusCode::invalid_argument, "outputs must be n_focals x n_genes");
+  }
+  // Every index the loop below dereferences, checked once here.
+  for (std::int64_t f = 0; f < n_focals; ++f) {
+    if (in.focal_group[f] < 1 || in.focal_group[f] > n_groups) {
+      return Status::failure(StatusCode::invalid_argument, "focal_group index out of range");
+    }
+    if (in.intercept_rows[f] < 1 || in.intercept_rows[f] > in.q) {
+      return Status::failure(StatusCode::invalid_argument, "intercept row index out of range");
+    }
+    for (std::int64_t k = 0; k < in.n_kernel; ++k) {
+      const int row = in.slope_rows[k + f * in.n_kernel];
+      if (row < 1 || row > in.q) {
+        return Status::failure(StatusCode::invalid_argument, "slope row index out of range");
+      }
+    }
+    for (std::int64_t a = 0; a < in.n_responder; ++a) {
+      const int row = in.responder_rows[a + f * in.n_responder];
+      if (row < 1 || row > in.q) {
+        return Status::failure(StatusCode::invalid_argument, "responder row index out of range");
+      }
+    }
+  }
+  for (std::int64_t a = 0; a < in.n_responder; ++a) {
+    if (in.responder_keep[a] < 1 || in.responder_keep[a] > in.n_kernel) {
+      return Status::failure(StatusCode::invalid_argument, "responder keep index out of range");
+    }
   }
 
   // A cell type with no cells contributes a zero mean count, as the R code set.
@@ -542,13 +571,14 @@ Status subset_column(const CscView& matrix, Span<const int> rows, int column, Sp
 }
 
 Status column_nonzero_rows(const CscView& matrix, int column, Span<int> rows, std::int64_t* n_found) {
-  const int j = column - 1;
-  if (j < 0 || j >= matrix.n_cols) {
+  if (column < 1 || column > matrix.n_cols) {
     return Status::failure(StatusCode::invalid_argument, "column index out of range");
   }
+  const int j = column - 1;
   std::int64_t found = 0;
   for (int k = matrix.column_pointer[j]; k < matrix.column_pointer[j + 1]; ++k) {
-    if (matrix.values[k] == 0.0) continue;
+    // R's which(x != 0) drops a missing value rather than keeping it
+    if (matrix.values[k] == 0.0 || std::isnan(matrix.values[k])) continue;
     if (rows.size != 0) {
       if (found >= rows.size) return Status::failure(StatusCode::invalid_argument, "rows buffer too small");
       rows[found] = matrix.row_index[k] + 1;
@@ -592,11 +622,14 @@ Status pair_variance_pratt(Span<const double> sigma, Span<const double> u, std::
   long double total = 0.0L;
   long double diag_total = 0.0L;
   int negative = 0;
+  bool any_missing = false;
   for (std::int64_t k = 0; k < n_pairs; ++k) {
     v_pair[k] = static_cast<double>(pair_sum[static_cast<std::size_t>(k)]);
     v_diag[k] = static_cast<double>(square_sum[static_cast<std::size_t>(k)]) * sigma[k + k * n_pairs];
     total += v_pair[k];
     diag_total += v_diag[k];
+    // R's sum(V_pair < 0) is NA as soon as one comparison is NA
+    if (std::isnan(v_pair[k])) any_missing = true;
     if (v_pair[k] < 0) negative += 1;
   }
   const double pratt_total = static_cast<double>(total);
@@ -609,7 +642,7 @@ Status pair_variance_pratt(Span<const double> sigma, Span<const double> u, std::
   *v_total = pratt_total;
   *v_diag_total = diagonal_total;
   *cross_cov_pct = 100 * (pratt_total - diagonal_total) / pratt_total;
-  *n_negative = negative;
+  *n_negative = any_missing ? -1 : negative;
   return Status::success();
 }
 

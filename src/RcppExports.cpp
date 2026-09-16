@@ -177,19 +177,21 @@ BEGIN_RCPP
 END_RCPP
 }
 // pace_final_pass_statistics_cpp
-Rcpp::List pace_final_pass_statistics_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::NumericVector& offset, const Rcpp::NumericMatrix& ambient, const Rcpp::NumericVector& rho, const Rcpp::IntegerVector& group, int n_groups, bool return_matrices);
-RcppExport SEXP _PACE_pace_final_pass_statistics_cpp(SEXP etaSEXP, SEXP offsetSEXP, SEXP ambientSEXP, SEXP rhoSEXP, SEXP groupSEXP, SEXP n_groupsSEXP, SEXP return_matricesSEXP) {
+Rcpp::List pace_final_pass_statistics_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::NumericVector& offset, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& rho, const Rcpp::IntegerVector& group, int n_groups, bool want_groups, bool return_matrices);
+RcppExport SEXP _PACE_pace_final_pass_statistics_cpp(SEXP etaSEXP, SEXP offsetSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP rhoSEXP, SEXP groupSEXP, SEXP n_groupsSEXP, SEXP want_groupsSEXP, SEXP return_matricesSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
     Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type eta(etaSEXP);
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
-    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< int >::type first_gene(first_geneSEXP);
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
     Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type group(groupSEXP);
     Rcpp::traits::input_parameter< int >::type n_groups(n_groupsSEXP);
+    Rcpp::traits::input_parameter< bool >::type want_groups(want_groupsSEXP);
     Rcpp::traits::input_parameter< bool >::type return_matrices(return_matricesSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_final_pass_statistics_cpp(eta, offset, ambient, rho, group, n_groups, return_matrices));
+    rcpp_result_gen = Rcpp::wrap(pace_final_pass_statistics_cpp(eta, offset, ambient, first_gene, rho, group, n_groups, want_groups, return_matrices));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -368,6 +370,179 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_working_response_cpp
+Rcpp::List pace_working_response_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, int n_genes, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2, bool seed_iteration, int n_cells, int n_threads);
+RcppExport SEXP _PACE_pace_working_response_cpp(SEXP etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP n_genesSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP sample_weightSEXP, SEXP nb2SEXP, SEXP seed_iterationSEXP, SEXP n_cellsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type eta(etaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< int >::type first_gene(first_geneSEXP);
+    Rcpp::traits::input_parameter< int >::type n_genes(n_genesSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type alpha(alphaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type sample_weight(sample_weightSEXP);
+    Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
+    Rcpp::traits::input_parameter< bool >::type seed_iteration(seed_iterationSEXP);
+    Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_working_response_cpp(eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_rho_accumulate_cpp
+Rcpp::List pace_rho_accumulate_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::NumericMatrix& prev_eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, const Rcpp::NumericVector& num_in, const Rcpp::NumericVector& den_in, bool nb2, bool seed_iteration, bool seed_previous, int n_cells, int n_genes_in, bool want_tail_counts);
+RcppExport SEXP _PACE_pace_rho_accumulate_cpp(SEXP etaSEXP, SEXP prev_etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP maskSEXP, SEXP mask_indexSEXP, SEXP num_inSEXP, SEXP den_inSEXP, SEXP nb2SEXP, SEXP seed_iterationSEXP, SEXP seed_previousSEXP, SEXP n_cellsSEXP, SEXP n_genes_inSEXP, SEXP want_tail_countsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type eta(etaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type prev_eta(prev_etaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< int >::type first_gene(first_geneSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type alpha(alphaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type mask(maskSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type mask_index(mask_indexSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type num_in(num_inSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type den_in(den_inSEXP);
+    Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
+    Rcpp::traits::input_parameter< bool >::type seed_iteration(seed_iterationSEXP);
+    Rcpp::traits::input_parameter< bool >::type seed_previous(seed_previousSEXP);
+    Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_genes_in(n_genes_inSEXP);
+    Rcpp::traits::input_parameter< bool >::type want_tail_counts(want_tail_countsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_rho_accumulate_cpp(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_fitted_mean_column_cpp
+Rcpp::List pace_fitted_mean_column_cpp(const Rcpp::NumericVector& eta_column, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, int gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho);
+RcppExport SEXP _PACE_pace_fitted_mean_column_cpp(SEXP eta_columnSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type eta_column(eta_columnSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< int >::type first_gene(first_geneSEXP);
+    Rcpp::traits::input_parameter< int >::type gene(geneSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_fitted_mean_column_cpp(eta_column, counts, ambient, first_gene, gene, offset, rho));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_rho_shrink_cpp
+Rcpp::List pace_rho_shrink_cpp(const Rcpp::NumericVector& num, const Rcpp::NumericVector& den);
+RcppExport SEXP _PACE_pace_rho_shrink_cpp(SEXP numSEXP, SEXP denSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type num(numSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type den(denSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_rho_shrink_cpp(num, den));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_tau_em_update_cpp
+Rcpp::NumericVector pace_tau_em_update_cpp(const Rcpp::NumericMatrix& u, const Rcpp::NumericMatrix& re_var);
+RcppExport SEXP _PACE_pace_tau_em_update_cpp(SEXP uSEXP, SEXP re_varSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type u(uSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type re_var(re_varSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_tau_em_update_cpp(u, re_var));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_tau_hierarchical_cpp
+Rcpp::NumericMatrix pace_tau_hierarchical_cpp(const Rcpp::NumericMatrix& tau, const Rcpp::IntegerVector& n_group, double lambda_factor);
+RcppExport SEXP _PACE_pace_tau_hierarchical_cpp(SEXP tauSEXP, SEXP n_groupSEXP, SEXP lambda_factorSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type tau(tauSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type n_group(n_groupSEXP);
+    Rcpp::traits::input_parameter< double >::type lambda_factor(lambda_factorSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_tau_hierarchical_cpp(tau, n_group, lambda_factor));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_tau_eb_summaries_cpp
+Rcpp::List pace_tau_eb_summaries_cpp(const Rcpp::NumericMatrix& s2, double reml_factor);
+RcppExport SEXP _PACE_pace_tau_eb_summaries_cpp(SEXP s2SEXP, SEXP reml_factorSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type s2(s2SEXP);
+    Rcpp::traits::input_parameter< double >::type reml_factor(reml_factorSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_tau_eb_summaries_cpp(s2, reml_factor));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_tau_eb_apply_cpp
+Rcpp::NumericMatrix pace_tau_eb_apply_cpp(const Rcpp::NumericMatrix& s2, double reml_factor, const Rcpp::NumericVector& panel, const Rcpp::NumericVector& panel_median, const Rcpp::NumericVector& d0, double tau_floor);
+RcppExport SEXP _PACE_pace_tau_eb_apply_cpp(SEXP s2SEXP, SEXP reml_factorSEXP, SEXP panelSEXP, SEXP panel_medianSEXP, SEXP d0SEXP, SEXP tau_floorSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type s2(s2SEXP);
+    Rcpp::traits::input_parameter< double >::type reml_factor(reml_factorSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type panel(panelSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type panel_median(panel_medianSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type d0(d0SEXP);
+    Rcpp::traits::input_parameter< double >::type tau_floor(tau_floorSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_tau_eb_apply_cpp(s2, reml_factor, panel, panel_median, d0, tau_floor));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_tau_half_cauchy_cpp
+Rcpp::List pace_tau_half_cauchy_cpp(const Rcpp::NumericMatrix& s2, int n_em_iter, double tau_floor, const Rcpp::NumericVector& lambda2_prev, const Rcpp::NumericMatrix& a_prev);
+RcppExport SEXP _PACE_pace_tau_half_cauchy_cpp(SEXP s2SEXP, SEXP n_em_iterSEXP, SEXP tau_floorSEXP, SEXP lambda2_prevSEXP, SEXP a_prevSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type s2(s2SEXP);
+    Rcpp::traits::input_parameter< int >::type n_em_iter(n_em_iterSEXP);
+    Rcpp::traits::input_parameter< double >::type tau_floor(tau_floorSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type lambda2_prev(lambda2_prevSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type a_prev(a_prevSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_tau_half_cauchy_cpp(s2, n_em_iter, tau_floor, lambda2_prev, a_prev));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_tau_clamp_cpp
+Rcpp::List pace_tau_clamp_cpp(const Rcpp::NumericMatrix& tau, double tau_max);
+RcppExport SEXP _PACE_pace_tau_clamp_cpp(SEXP tauSEXP, SEXP tau_maxSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type tau(tauSEXP);
+    Rcpp::traits::input_parameter< double >::type tau_max(tau_maxSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_tau_clamp_cpp(tau, tau_max));
+    return rcpp_result_gen;
+END_RCPP
+}
+// pace_data_informed_weights_cpp
+Rcpp::NumericMatrix pace_data_informed_weights_cpp(const Rcpp::NumericMatrix& detection_rate, const Rcpp::IntegerVector& focal_of_row, const Rcpp::NumericVector& scale_of_row);
+RcppExport SEXP _PACE_pace_data_informed_weights_cpp(SEXP detection_rateSEXP, SEXP focal_of_rowSEXP, SEXP scale_of_rowSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type detection_rate(detection_rateSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type focal_of_row(focal_of_rowSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type scale_of_row(scale_of_rowSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_data_informed_weights_cpp(detection_rate, focal_of_row, scale_of_row));
+    return rcpp_result_gen;
+END_RCPP
+}
 // solve_chunk_full_cpp
 List solve_chunk_full_cpp(const Eigen::Map<Eigen::MatrixXd>& X_fixed, const Eigen::Map<Eigen::MatrixXd>& w_chunk, const Eigen::Map<Eigen::MatrixXd>& z_chunk, const Eigen::Map<Eigen::MatrixXd>& lam_diag_chunk, int q_total, const List& blocks, const List& X_terms_list, const List& cells_by_grp_list, const List& cell_grp_list, int n_threads, int stage3_mode, int interior_precision);
 RcppExport SEXP _PACE_solve_chunk_full_cpp(SEXP X_fixedSEXP, SEXP w_chunkSEXP, SEXP z_chunkSEXP, SEXP lam_diag_chunkSEXP, SEXP q_totalSEXP, SEXP blocksSEXP, SEXP X_terms_listSEXP, SEXP cells_by_grp_listSEXP, SEXP cell_grp_listSEXP, SEXP n_threadsSEXP, SEXP stage3_modeSEXP, SEXP interior_precisionSEXP) {
@@ -423,7 +598,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_group_covariances_cpp", (DL_FUNC) &_PACE_pace_group_covariances_cpp, 4},
     {"_PACE_pace_single_frame_statistics_cpp", (DL_FUNC) &_PACE_pace_single_frame_statistics_cpp, 5},
     {"_PACE_pace_dense_group_moments_cpp", (DL_FUNC) &_PACE_pace_dense_group_moments_cpp, 8},
-    {"_PACE_pace_final_pass_statistics_cpp", (DL_FUNC) &_PACE_pace_final_pass_statistics_cpp, 7},
+    {"_PACE_pace_final_pass_statistics_cpp", (DL_FUNC) &_PACE_pace_final_pass_statistics_cpp, 9},
     {"_PACE_pace_variance_decomposition_cpp", (DL_FUNC) &_PACE_pace_variance_decomposition_cpp, 19},
     {"_PACE_pace_decomposition_aggregates_cpp", (DL_FUNC) &_PACE_pace_decomposition_aggregates_cpp, 7},
     {"_PACE_pace_four_block_shares_cpp", (DL_FUNC) &_PACE_pace_four_block_shares_cpp, 5},
@@ -435,6 +610,17 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_pair_variance_pratt_cpp", (DL_FUNC) &_PACE_pace_pair_variance_pratt_cpp, 2},
     {"_PACE_pace_single_frame_focal_blocks_cpp", (DL_FUNC) &_PACE_pace_single_frame_focal_blocks_cpp, 4},
     {"_PACE_pace_all_finite_cpp", (DL_FUNC) &_PACE_pace_all_finite_cpp, 1},
+    {"_PACE_pace_working_response_cpp", (DL_FUNC) &_PACE_pace_working_response_cpp, 13},
+    {"_PACE_pace_rho_accumulate_cpp", (DL_FUNC) &_PACE_pace_rho_accumulate_cpp, 18},
+    {"_PACE_pace_fitted_mean_column_cpp", (DL_FUNC) &_PACE_pace_fitted_mean_column_cpp, 7},
+    {"_PACE_pace_rho_shrink_cpp", (DL_FUNC) &_PACE_pace_rho_shrink_cpp, 2},
+    {"_PACE_pace_tau_em_update_cpp", (DL_FUNC) &_PACE_pace_tau_em_update_cpp, 2},
+    {"_PACE_pace_tau_hierarchical_cpp", (DL_FUNC) &_PACE_pace_tau_hierarchical_cpp, 3},
+    {"_PACE_pace_tau_eb_summaries_cpp", (DL_FUNC) &_PACE_pace_tau_eb_summaries_cpp, 2},
+    {"_PACE_pace_tau_eb_apply_cpp", (DL_FUNC) &_PACE_pace_tau_eb_apply_cpp, 6},
+    {"_PACE_pace_tau_half_cauchy_cpp", (DL_FUNC) &_PACE_pace_tau_half_cauchy_cpp, 5},
+    {"_PACE_pace_tau_clamp_cpp", (DL_FUNC) &_PACE_pace_tau_clamp_cpp, 2},
+    {"_PACE_pace_data_informed_weights_cpp", (DL_FUNC) &_PACE_pace_data_informed_weights_cpp, 3},
     {"_PACE_solve_chunk_full_cpp", (DL_FUNC) &_PACE_solve_chunk_full_cpp, 12},
     {"_PACE_solve_chunk_mb_cpp", (DL_FUNC) &_PACE_solve_chunk_mb_cpp, 11},
     {NULL, NULL, 0}

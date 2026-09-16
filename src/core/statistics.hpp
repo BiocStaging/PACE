@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "core_types.hpp"
+#include "count_stats.hpp"
 
 namespace pace {
 
@@ -60,14 +61,16 @@ Status dense_group_moments(Span<const double> values, std::int64_t n, std::int64
 // column order, so a thread split would change their last bits with the thread
 // count. The work is one pass over n x n_genes, the same pass R made.
 //
-// Shapes: eta and ambient are n * n_genes column-major; offset, rho and group
-// have n entries; mu_group_sum and toff_variance are n_groups * n_genes;
+// Shapes: eta is n * n_genes column-major and `ambient` is the matching block of
+// the sparse ambient field, read one gene at a time; offset, rho and group
+// have n entries; mu_group_sum and toff_variance are n_groups * n_genes, or
+// empty when the caller wants only the row sums;
 // mu_column_sum has n_genes; spill_row_sum and total_row_sum have n; mu_out and
 // toff_out are either empty (not wanted) or n * n_genes. A group with fewer than
 // two cells gets a NaN variance, which the binding reports as R's NA.
 // Non-finite inputs are refused.
 Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_t n_genes,
-                             Span<const double> offset, Span<const double> ambient,
+                             Span<const double> offset, const GeneBlock& ambient,
                              Span<const double> rho, Span<const int> group, int n_groups,
                              Span<double> mu_group_sum, Span<double> toff_variance,
                              Span<double> mu_column_sum, Span<double> spill_row_sum,

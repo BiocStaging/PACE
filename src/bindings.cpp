@@ -11,6 +11,8 @@
 #include "core/count_stats.hpp"
 #include "core/core_types.hpp"
 #include "core/decomposition.hpp"
+#include "core/hyperparameters.hpp"
+#include "core/irls_chunk.hpp"
 #include "core/neighbourhood.hpp"
 #include "core/statistics.hpp"
 
@@ -297,6 +299,18 @@ Rcpp::List pace_single_frame_statistics_cpp(const Rcpp::S4& counts, const Rcpp::
                             Rcpp::Named("global_mean") = global_mean);
 }
 
+namespace {
+
+// A gene range of a cells x genes CSC matrix; `first_gene` is 1-based.
+pace::GeneBlock gene_block(const CscHolder& holder, int first_gene) {
+  pace::GeneBlock block;
+  block.matrix = holder.view;
+  block.first_gene = first_gene - 1;
+  return block;
+}
+
+}  // namespace
+
 // Per-group mean and variance of the columns of a dense matrix (see
 // pace::dense_group_moments). `values` may be a 0 x 0 matrix, which means an
 // all-zero n x p matrix. Returns mean, variance (R's NA where fewer than two
@@ -327,14 +341,15 @@ Rcpp::List pace_dense_group_moments_cpp(const Rcpp::NumericMatrix& values, int n
 // [[Rcpp::export]]
 Rcpp::List pace_final_pass_statistics_cpp(const Rcpp::NumericMatrix& eta,
                                           const Rcpp::NumericVector& offset,
-                                          const Rcpp::NumericMatrix& ambient,
+                                          const Rcpp::S4& ambient, int first_gene,
                                           const Rcpp::NumericVector& rho,
                                           const Rcpp::IntegerVector& group, int n_groups,
-                                          bool return_matrices) {
+                                          bool want_groups, bool return_matrices) {
+  CscHolder ambient_holder(ambient);
   const std::int64_t n = eta.nrow();
   const std::int64_t n_genes = eta.ncol();
-  Rcpp::NumericMatrix mu_group_sum(n_groups, n_genes);
-  Rcpp::NumericMatrix toff_variance(n_groups, n_genes);
+  Rcpp::NumericMatrix mu_group_sum(want_groups ? n_groups : 0, want_groups ? n_genes : 0);
+  Rcpp::NumericMatrix toff_variance(want_groups ? n_groups : 0, want_groups ? n_genes : 0);
   Rcpp::NumericVector mu_column_sum(n_genes);
   Rcpp::NumericVector spill_row_sum(n);
   Rcpp::NumericVector total_row_sum(n);
@@ -342,20 +357,22 @@ Rcpp::List pace_final_pass_statistics_cpp(const Rcpp::NumericMatrix& eta,
   Rcpp::NumericMatrix toff(return_matrices ? n : 0, return_matrices ? n_genes : 0);
   bool any_nonzero = false;
   const pace::Status status = pace::final_pass_statistics(
-      const_span(eta), n, n_genes, double_span(offset), const_span(ambient), double_span(rho),
-      int_span(group), n_groups, out_span(mu_group_sum), out_span(toff_variance),
+      const_span(eta), n, n_genes, double_span(offset), gene_block(ambient_holder, first_gene),
+      double_span(rho), int_span(group), n_groups, out_span(mu_group_sum), out_span(toff_variance),
       out_span(mu_column_sum), out_span(spill_row_sum), out_span(total_row_sum), out_span(mu),
       out_span(toff), &any_nonzero, user_interrupted);
   raise_if_failed(status, "final pass statistics");
   // stats::var() of fewer than two values is NA, not NaN.
-  std::vector<int> group_size(n_groups, 0);
-  for (R_xlen_t i = 0; i < group.size(); ++i) {
-    const int g = group[i];
-    if (g >= 0 && g < n_groups) group_size[g] += 1;
-  }
-  for (std::int64_t j = 0; j < n_genes; ++j) {
-    for (int g = 0; g < n_groups; ++g) {
-      if (group_size[g] < 2) toff_variance[g + j * n_groups] = NA_REAL;
+  std::vector<int> group_size(want_groups ? n_groups : 0, 0);
+  if (want_groups) {
+    for (R_xlen_t i = 0; i < group.size(); ++i) {
+      const int g = group[i];
+      if (g >= 0 && g < n_groups) group_size[g] += 1;
+    }
+    for (std::int64_t j = 0; j < n_genes; ++j) {
+      for (int g = 0; g < n_groups; ++g) {
+        if (group_size[g] < 2) toff_variance[g + j * n_groups] = NA_REAL;
+      }
     }
   }
   return Rcpp::List::create(Rcpp::Named("mu_group_sum") = mu_group_sum,
@@ -617,7 +634,8 @@ Rcpp::List pace_pair_variance_pratt_cpp(const Rcpp::NumericMatrix& sigma,
                             Rcpp::Named("sign") = sign, Rcpp::Named("V_block_pratt") = v_total,
                             Rcpp::Named("V_block_diag") = v_diag_total,
                             Rcpp::Named("cross_cov_pct") = cross_cov_pct,
-                            Rcpp::Named("n_negative_pairs") = n_negative);
+                            Rcpp::Named("n_negative_pairs") =
+                                n_negative < 0 ? NA_INTEGER : n_negative);
 }
 
 // SS-weighted per-focal blocks of the single frame (see pace::single_frame_focal_blocks).
@@ -639,3 +657,196 @@ Rcpp::NumericMatrix pace_single_frame_focal_blocks_cpp(const Rcpp::IntegerVector
 bool pace_all_finite_cpp(const Rcpp::NumericVector& values) {
   return pace::all_finite(double_span(values));
 }
+
+// ---------------------------------------------------------------------------
+// The streaming solver's per-chunk arithmetic (see core/irls_chunk.hpp) and its
+// variance-component updates (see core/hyperparameters.hpp). `first_gene` is the
+// 1-based first column of the chunk in the counts / ambient matrices.
+// ---------------------------------------------------------------------------
+
+// [[Rcpp::export]]
+Rcpp::List pace_working_response_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::S4& counts,
+                                     const Rcpp::S4& ambient, int first_gene, int n_genes,
+                                     const Rcpp::NumericVector& offset,
+                                     const Rcpp::NumericVector& rho,
+                                     const Rcpp::NumericVector& alpha,
+                                     const Rcpp::NumericVector& sample_weight, bool nb2,
+                                     bool seed_iteration, int n_cells, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  Rcpp::NumericMatrix z(n_cells, n_genes);
+  Rcpp::NumericMatrix w(n_cells, n_genes);
+  Rcpp::NumericVector colsum_w(n_genes);
+  const pace::Status status = pace::working_response(
+      seed_iteration ? pace::Span<const double>() : const_span(eta), gene_block(count_holder, first_gene),
+      gene_block(ambient_holder, first_gene), double_span(offset), double_span(rho),
+      double_span(alpha), double_span(sample_weight), nb2, seed_iteration, n_cells, n_genes,
+      out_span(z), out_span(w), out_span(colsum_w), n_threads, user_interrupted);
+  raise_if_failed(status, "working response");
+  return Rcpp::List::create(Rcpp::Named("z") = z, Rcpp::Named("w") = w,
+                            Rcpp::Named("colsum_w") = colsum_w);
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_rho_accumulate_cpp(const Rcpp::NumericMatrix& eta,
+                                   const Rcpp::NumericMatrix& prev_eta, const Rcpp::S4& counts,
+                                   const Rcpp::S4& ambient, int first_gene,
+                                   const Rcpp::NumericVector& offset,
+                                   const Rcpp::NumericVector& rho,
+                                   const Rcpp::NumericVector& alpha,
+                                   const Rcpp::NumericMatrix& mask,
+                                   const Rcpp::IntegerVector& mask_index,
+                                   const Rcpp::NumericVector& num_in,
+                                   const Rcpp::NumericVector& den_in, bool nb2,
+                                   bool seed_iteration, bool seed_previous, int n_cells,
+                                   int n_genes_in, bool want_tail_counts) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const std::int64_t n = seed_iteration ? n_cells : eta.nrow();
+  const std::int64_t n_genes = seed_iteration ? n_genes_in : eta.ncol();
+  Rcpp::NumericVector num(Rcpp::clone(num_in));
+  Rcpp::NumericVector den(Rcpp::clone(den_in));
+  double rel_delta_max = 0;
+  double rel_delta_sum = 0;
+  std::int64_t n_finite = 0;
+  std::int64_t n_nonfinite = 0;
+  Rcpp::NumericVector tail_counts(want_tail_counts ? 4 : 0);
+  const pace::Status status = pace::rho_accumulate(
+      const_span(eta), const_span(prev_eta), gene_block(count_holder, first_gene),
+      gene_block(ambient_holder, first_gene), double_span(offset), double_span(rho),
+      double_span(alpha), const_span(mask), int_span(mask_index), mask.nrow(), nb2, seed_iteration,
+      seed_previous, n, n_genes, out_span(num), out_span(den), &rel_delta_max, &rel_delta_sum, &n_finite,
+      &n_nonfinite, out_span(tail_counts), user_interrupted);
+  raise_if_failed(status, "rho accumulation");
+  return Rcpp::List::create(Rcpp::Named("num") = num, Rcpp::Named("den") = den,
+                            Rcpp::Named("rel_delta_max") = rel_delta_max,
+                            Rcpp::Named("rel_delta_sum") = rel_delta_sum,
+                            Rcpp::Named("n_finite") = static_cast<double>(n_finite),
+                            Rcpp::Named("n_nonfinite") = static_cast<double>(n_nonfinite),
+                            Rcpp::Named("tail_counts") = tail_counts);
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_fitted_mean_column_cpp(const Rcpp::NumericVector& eta_column,
+                                       const Rcpp::S4& counts, const Rcpp::S4& ambient,
+                                       int first_gene, int gene,
+                                       const Rcpp::NumericVector& offset,
+                                       const Rcpp::NumericVector& rho) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const std::int64_t n = eta_column.size();
+  Rcpp::NumericVector mu(n);
+  Rcpp::NumericVector y(n);
+  const pace::Status status = pace::fitted_mean_column(
+      double_span(eta_column), gene_block(count_holder, first_gene),
+      gene_block(ambient_holder, first_gene), double_span(offset), double_span(rho), n, gene - 1,
+      out_span(mu), out_span(y));
+  raise_if_failed(status, "fitted mean column");
+  return Rcpp::List::create(Rcpp::Named("mu") = mu, Rcpp::Named("y") = y);
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_rho_shrink_cpp(const Rcpp::NumericVector& num, const Rcpp::NumericVector& den) {
+  const std::int64_t n = num.size();
+  Rcpp::NumericVector rho(n);
+  std::int64_t n_nonfinite = 0;
+  double rho_bar = 0;
+  double den_quantile = 0;
+  const pace::Status status = pace::rho_shrink(double_span(num), double_span(den), n,
+                                               out_span(rho), &n_nonfinite, &rho_bar, &den_quantile);
+  raise_if_failed(status, "rho shrink");
+  return Rcpp::List::create(Rcpp::Named("rho") = rho,
+                            Rcpp::Named("n_nonfinite") = static_cast<double>(n_nonfinite),
+                            Rcpp::Named("rho_bar") = rho_bar,
+                            Rcpp::Named("den_quantile") = den_quantile);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericVector pace_tau_em_update_cpp(const Rcpp::NumericMatrix& u,
+                                           const Rcpp::NumericMatrix& re_var) {
+  Rcpp::NumericVector tau(u.nrow());
+  const pace::Status status = pace::tau_em_update(const_span(u), const_span(re_var), u.nrow(),
+                                                  u.ncol(), out_span(tau));
+  raise_if_failed(status, "tau EM update");
+  return tau;
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_tau_hierarchical_cpp(const Rcpp::NumericMatrix& tau,
+                                              const Rcpp::IntegerVector& n_group,
+                                              double lambda_factor) {
+  Rcpp::NumericMatrix out(tau.nrow(), tau.ncol());
+  const pace::Status status = pace::tau_hierarchical(const_span(tau), int_span(n_group), tau.nrow(),
+                                                     tau.ncol(), lambda_factor, out_span(out));
+  raise_if_failed(status, "hierarchical tau");
+  return out;
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_tau_eb_summaries_cpp(const Rcpp::NumericMatrix& s2, double reml_factor) {
+  const std::int64_t q = s2.nrow();
+  Rcpp::NumericVector panel(q), panel_median(q), log_variance(q);
+  Rcpp::IntegerVector n_log_finite(q);
+  const pace::Status status = pace::tau_eb_summaries(const_span(s2), q, s2.ncol(), reml_factor,
+                                                     out_span(panel), out_span(panel_median),
+                                                     out_span(log_variance), out_span(n_log_finite));
+  raise_if_failed(status, "tau EB summaries");
+  return Rcpp::List::create(Rcpp::Named("panel") = panel,
+                            Rcpp::Named("panel_median") = panel_median,
+                            Rcpp::Named("log_variance") = log_variance,
+                            Rcpp::Named("n_log_finite") = n_log_finite);
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_tau_eb_apply_cpp(const Rcpp::NumericMatrix& s2, double reml_factor,
+                                          const Rcpp::NumericVector& panel,
+                                          const Rcpp::NumericVector& panel_median,
+                                          const Rcpp::NumericVector& d0, double tau_floor) {
+  Rcpp::NumericMatrix out(s2.nrow(), s2.ncol());
+  const pace::Status status = pace::tau_eb_apply(const_span(s2), s2.nrow(), s2.ncol(), reml_factor,
+                                                 double_span(panel), double_span(panel_median),
+                                                 double_span(d0), tau_floor, out_span(out));
+  raise_if_failed(status, "tau EB shrinkage");
+  return out;
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_tau_half_cauchy_cpp(const Rcpp::NumericMatrix& s2, int n_em_iter, double tau_floor,
+                                    const Rcpp::NumericVector& lambda2_prev,
+                                    const Rcpp::NumericMatrix& a_prev) {
+  Rcpp::NumericMatrix out(s2.nrow(), s2.ncol());
+  Rcpp::NumericMatrix a_out(s2.nrow(), s2.ncol());
+  Rcpp::NumericVector lambda2_out(s2.nrow());
+  Rcpp::NumericVector panel(s2.nrow());
+  const pace::Status status = pace::tau_half_cauchy(
+      const_span(s2), s2.nrow(), s2.ncol(), n_em_iter, tau_floor, double_span(lambda2_prev),
+      const_span(a_prev), out_span(out), out_span(lambda2_out), out_span(a_out), out_span(panel));
+  raise_if_failed(status, "half-Cauchy tau");
+  return Rcpp::List::create(Rcpp::Named("tau") = out, Rcpp::Named("lambda_sq") = lambda2_out,
+                            Rcpp::Named("a") = a_out, Rcpp::Named("panel") = panel);
+}
+
+// [[Rcpp::export]]
+Rcpp::List pace_tau_clamp_cpp(const Rcpp::NumericMatrix& tau, double tau_max) {
+  Rcpp::NumericMatrix out(Rcpp::clone(tau));
+  std::int64_t n_binding = 0;
+  const pace::Status status = pace::tau_clamp(out_span(out), Rf_xlength(out), tau_max, &n_binding);
+  raise_if_failed(status, "tau clamp");
+  return Rcpp::List::create(Rcpp::Named("tau") = out,
+                            Rcpp::Named("n_binding") = static_cast<double>(n_binding));
+}
+
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_data_informed_weights_cpp(const Rcpp::NumericMatrix& detection_rate,
+                                                   const Rcpp::IntegerVector& focal_of_row,
+                                                   const Rcpp::NumericVector& scale_of_row) {
+  const std::int64_t q = focal_of_row.size();
+  const std::int64_t n_genes = detection_rate.ncol();
+  Rcpp::NumericMatrix weights(q, n_genes);
+  const pace::Status status = pace::data_informed_weights(
+      const_span(detection_rate), detection_rate.nrow(), n_genes, int_span(focal_of_row),
+      double_span(scale_of_row), q, out_span(weights));
+  raise_if_failed(status, "data-informed weights");
+  return weights;
+}
+

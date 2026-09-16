@@ -41,8 +41,8 @@ pace_dense_group_moments_cpp <- function(values, n, p, group, n_groups, want_mea
     .Call(`_PACE_pace_dense_group_moments_cpp`, values, n, p, group, n_groups, want_mean, want_variance, n_threads)
 }
 
-pace_final_pass_statistics_cpp <- function(eta, offset, ambient, rho, group, n_groups, return_matrices) {
-    .Call(`_PACE_pace_final_pass_statistics_cpp`, eta, offset, ambient, rho, group, n_groups, return_matrices)
+pace_final_pass_statistics_cpp <- function(eta, offset, ambient, first_gene, rho, group, n_groups, want_groups, return_matrices) {
+    .Call(`_PACE_pace_final_pass_statistics_cpp`, eta, offset, ambient, first_gene, rho, group, n_groups, want_groups, return_matrices)
 }
 
 pace_variance_decomposition_cpp <- function(ct_means, group_size, focal_group, n_focal, u, se_u, slope_rows, kernel_cov, responder_rows, responder_keep, responder_cov, intercept_rows, toff_var, spill_cov, beta_spill, mu_mean, alpha, nb1, n_threads) {
@@ -87,6 +87,50 @@ pace_single_frame_focal_blocks_cpp <- function(focal_code, n_focals, pct, denom)
 
 pace_all_finite_cpp <- function(values) {
     .Call(`_PACE_pace_all_finite_cpp`, values)
+}
+
+pace_working_response_cpp <- function(eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, n_threads) {
+    .Call(`_PACE_pace_working_response_cpp`, eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, n_threads)
+}
+
+pace_rho_accumulate_cpp <- function(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts) {
+    .Call(`_PACE_pace_rho_accumulate_cpp`, eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts)
+}
+
+pace_fitted_mean_column_cpp <- function(eta_column, counts, ambient, first_gene, gene, offset, rho) {
+    .Call(`_PACE_pace_fitted_mean_column_cpp`, eta_column, counts, ambient, first_gene, gene, offset, rho)
+}
+
+pace_rho_shrink_cpp <- function(num, den) {
+    .Call(`_PACE_pace_rho_shrink_cpp`, num, den)
+}
+
+pace_tau_em_update_cpp <- function(u, re_var) {
+    .Call(`_PACE_pace_tau_em_update_cpp`, u, re_var)
+}
+
+pace_tau_hierarchical_cpp <- function(tau, n_group, lambda_factor) {
+    .Call(`_PACE_pace_tau_hierarchical_cpp`, tau, n_group, lambda_factor)
+}
+
+pace_tau_eb_summaries_cpp <- function(s2, reml_factor) {
+    .Call(`_PACE_pace_tau_eb_summaries_cpp`, s2, reml_factor)
+}
+
+pace_tau_eb_apply_cpp <- function(s2, reml_factor, panel, panel_median, d0, tau_floor) {
+    .Call(`_PACE_pace_tau_eb_apply_cpp`, s2, reml_factor, panel, panel_median, d0, tau_floor)
+}
+
+pace_tau_half_cauchy_cpp <- function(s2, n_em_iter, tau_floor, lambda2_prev, a_prev) {
+    .Call(`_PACE_pace_tau_half_cauchy_cpp`, s2, n_em_iter, tau_floor, lambda2_prev, a_prev)
+}
+
+pace_tau_clamp_cpp <- function(tau, tau_max) {
+    .Call(`_PACE_pace_tau_clamp_cpp`, tau, tau_max)
+}
+
+pace_data_informed_weights_cpp <- function(detection_rate, focal_of_row, scale_of_row) {
+    .Call(`_PACE_pace_data_informed_weights_cpp`, detection_rate, focal_of_row, scale_of_row)
 }
 
 solve_chunk_full_cpp <- function(X_fixed, w_chunk, z_chunk, lam_diag_chunk, q_total, blocks, X_terms_list, cells_by_grp_list, cell_grp_list, n_threads, stage3_mode = 0L, interior_precision = 0L) {

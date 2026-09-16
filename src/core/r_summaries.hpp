@@ -9,6 +9,7 @@
 #ifndef PACE_R_SUMMARIES_HPP
 #define PACE_R_SUMMARIES_HPP
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -76,6 +77,67 @@ inline double r_variance(const double* values, const std::vector<std::int64_t>& 
     sum += square;
   }
   return static_cast<double>(sum / static_cast<long double>(n_used - 1));
+}
+
+// R's mean(x, na.rm = skip_missing) over a contiguous array.
+inline double r_mean_array(const double* values, std::int64_t n, bool skip_missing,
+                           std::int64_t* n_used) {
+  long double sum = 0.0L;
+  std::int64_t used = 0;
+  for (std::int64_t i = 0; i < n; ++i) {
+    if (skip_missing && std::isnan(values[i])) continue;
+    sum += values[i];
+    used += 1;
+  }
+  if (n_used != nullptr) *n_used = used;
+  if (used == 0) return std::numeric_limits<double>::quiet_NaN();
+  long double mean = sum / static_cast<long double>(used);
+  if (std::isfinite(static_cast<double>(mean))) {
+    long double correction = 0.0L;
+    for (std::int64_t i = 0; i < n; ++i) {
+      if (skip_missing && std::isnan(values[i])) continue;
+      correction += (values[i] - mean);
+    }
+    mean = mean + correction / static_cast<long double>(used);
+  }
+  return static_cast<double>(mean);
+}
+
+// R's stats::var(x, na.rm = skip_missing) over a contiguous array.
+inline double r_variance_array(const double* values, std::int64_t n, bool skip_missing) {
+  std::int64_t used = 0;
+  const double mean = r_mean_array(values, n, skip_missing, &used);
+  if (used < 2) return std::numeric_limits<double>::quiet_NaN();
+  long double sum = 0.0L;
+  for (std::int64_t i = 0; i < n; ++i) {
+    if (skip_missing && std::isnan(values[i])) continue;
+    const double centred = values[i] - mean;
+    const double square = centred * centred;
+    sum += square;
+  }
+  return static_cast<double>(sum / static_cast<long double>(used - 1));
+}
+
+// R's median(x, na.rm = TRUE): the middle value, or the mean of the two middle
+// values for an even count. `scratch` is reordered in place.
+inline double r_median(std::vector<double>& scratch) {
+  std::vector<double>::iterator last = scratch.end();
+  for (std::vector<double>::iterator it = scratch.begin(); it != last;) {
+    if (std::isnan(*it)) {
+      --last;
+      std::iter_swap(it, last);
+    } else {
+      ++it;
+    }
+  }
+  const std::int64_t n = static_cast<std::int64_t>(last - scratch.begin());
+  if (n == 0) return std::numeric_limits<double>::quiet_NaN();
+  const std::int64_t half = (n + 1) / 2;
+  std::nth_element(scratch.begin(), scratch.begin() + (half - 1), last);
+  const double lower = scratch[static_cast<std::size_t>(half - 1)];
+  if (n % 2 == 1) return lower;
+  const double upper = *std::min_element(scratch.begin() + half, last);
+  return static_cast<double>((static_cast<long double>(lower) + upper) / 2);
 }
 
 }  // namespace pace

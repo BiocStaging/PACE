@@ -19,6 +19,15 @@ struct CscView {
   std::int64_t n_cols = 0;
 };
 
+// A range of gene columns of a cells x genes CSC matrix: columns
+// [first_gene, first_gene + n_genes) of `matrix`, 0-based. Lets the solver read
+// the counts and the ambient field one gene at a time instead of densifying a
+// whole chunk of them.
+struct GeneBlock {
+  CscView matrix;
+  std::int64_t first_gene = 0;
+};
+
 // Mean of every column within each cell group, as R's
 //   colMeans(Y[group == g, , drop = FALSE])          (detection = false)
 //   colMeans(Y[group == g, , drop = FALSE] > 0)      (detection = true)

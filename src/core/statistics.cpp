@@ -1,4 +1,6 @@
 // statistics.cpp -- implementation of statistics.hpp.
+#include "fp_no_contract.hpp"  // must precede the arithmetic below
+
 #include "statistics.hpp"
 
 #include <algorithm>
@@ -86,7 +88,7 @@ Status dense_group_moments(Span<const double> values, std::int64_t n, std::int64
 }
 
 Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_t n_genes,
-                             Span<const double> offset, Span<const double> ambient,
+                             Span<const double> offset, const GeneBlock& ambient,
                              Span<const double> rho, Span<const int> group, int n_groups,
                              Span<double> mu_group_sum, Span<double> toff_variance,
                              Span<double> mu_column_sum, Span<double> spill_row_sum,
@@ -94,15 +96,22 @@ Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_
                              Span<double> toff_out, bool* any_nonzero,
                              const InterruptCheck& interrupted) {
   const std::int64_t cells_times_genes = n * n_genes;
-  if (eta.size != cells_times_genes || ambient.size != cells_times_genes) {
-    return Status::failure(StatusCode::invalid_argument, "eta and ambient must be n * n_genes");
+  if (eta.size != cells_times_genes) {
+    return Status::failure(StatusCode::invalid_argument, "eta must be n * n_genes");
   }
+  if (ambient.matrix.n_rows != n || ambient.first_gene + n_genes > ambient.matrix.n_cols) {
+    return Status::failure(StatusCode::invalid_argument, "the ambient block does not cover the genes");
+  }
+  const bool want_groups = mu_group_sum.size != 0;
   if (offset.size != n || rho.size != n || group.size != n) {
     return Status::failure(StatusCode::invalid_argument, "offset, rho and group must have one entry per cell");
   }
   const std::int64_t slots = static_cast<std::int64_t>(n_groups) * n_genes;
-  if (mu_group_sum.size != slots || toff_variance.size != slots || mu_column_sum.size != n_genes) {
+  if (want_groups && (mu_group_sum.size != slots || toff_variance.size != slots)) {
     return Status::failure(StatusCode::invalid_argument, "per-group outputs must be n_groups * n_genes");
+  }
+  if (mu_column_sum.size != n_genes) {
+    return Status::failure(StatusCode::invalid_argument, "mu_column_sum must have one entry per gene");
   }
   if (spill_row_sum.size != n || total_row_sum.size != n) {
     return Status::failure(StatusCode::invalid_argument, "row-sum outputs must have one entry per cell");
@@ -117,8 +126,8 @@ Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_
     }
   }
   for (std::int64_t k = 0; k < cells_times_genes; ++k) {
-    if (!std::isfinite(eta[k]) || !std::isfinite(ambient[k])) {
-      return Status::failure(StatusCode::invalid_argument, "eta and the ambient field must be finite");
+    if (!std::isfinite(eta[k])) {
+      return Status::failure(StatusCode::invalid_argument, "eta must be finite");
     }
   }
 
@@ -131,6 +140,7 @@ Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_
   std::vector<long double> total_accumulator(static_cast<std::size_t>(n), 0.0L);
   std::vector<double> mu_column(static_cast<std::size_t>(n));
   std::vector<double> toff_column(static_cast<std::size_t>(n));
+  std::vector<double> ambient_column(static_cast<std::size_t>(n));
   if (any_nonzero != nullptr) *any_nonzero = false;
 
   for (std::int64_t j = 0; j < n_genes; ++j) {
@@ -138,12 +148,21 @@ Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_
       return Status::failure(StatusCode::interrupted, "interrupted");
     }
     const double* eta_column = eta.data + j * n;
-    const double* ambient_column = ambient.data + j * n;
+    std::fill(ambient_column.begin(), ambient_column.end(), 0.0);
+    const std::int64_t ambient_gene = ambient.first_gene + j;
+    for (int k = ambient.matrix.column_pointer[ambient_gene];
+         k < ambient.matrix.column_pointer[ambient_gene + 1]; ++k) {
+      const double value = ambient.matrix.values[k];
+      if (!std::isfinite(value)) {
+        return Status::failure(StatusCode::invalid_argument, "the ambient field must be finite");
+      }
+      ambient_column[static_cast<std::size_t>(ambient.matrix.row_index[k])] = value;
+    }
     long double column_sum = 0.0L;
     for (std::int64_t i = 0; i < n; ++i) {
       double mu_bio = std::exp(eta_column[i] + offset[i]);
       if (!(mu_bio > 1e-6)) mu_bio = 1e-6;
-      double spill = ambient_column[i] * rho[i];
+      double spill = ambient_column[static_cast<std::size_t>(i)] * rho[i];
       if (!(spill > 0.0)) spill = 0.0;
       double mu = mu_bio + spill;
       if (!(mu > 1e-6)) mu = 1e-6;
@@ -156,7 +175,7 @@ Status final_pass_statistics(Span<const double> eta, std::int64_t n, std::int64_
       if (any_nonzero != nullptr && toff != 0.0 && !std::isnan(toff)) *any_nonzero = true;
     }
     mu_column_sum[j] = static_cast<double>(column_sum);
-    for (int g = 0; g < n_groups; ++g) {
+    for (int g = 0; want_groups && g < n_groups; ++g) {
       const std::vector<std::int64_t>& rows = rows_of_group[g];
       const std::int64_t slot = g + j * static_cast<std::int64_t>(n_groups);
       long double group_sum = 0.0L;
