@@ -6,8 +6,10 @@
 #include <Rcpp.h>
 #include <Rmath.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "core/count_stats.hpp"
 #include "core/core_types.hpp"
@@ -17,8 +19,8 @@
 #include "core/hyperparameters.hpp"
 #include "core/irls_chunk.hpp"
 #include "core/neighbourhood.hpp"
-#include "core/preprocess.hpp"
 #include "core/linear_predictor.hpp"
+#include "core/preprocess.hpp"
 #include "core/statistics.hpp"
 
 namespace {
@@ -1066,4 +1068,87 @@ Rcpp::NumericMatrix pace_eta_block_cpp(const Rcpp::NumericVector& x1, bool x1_is
       pace::Span<double>(eta.begin(), n * n_chunk), n_threads, user_interrupted);
   raise_if_failed(status, "eta block");
   return eta;
+}
+
+// One logical chunk's working response and weights, built a sub-block at a time
+// inside the core.
+//
+// This replaces an R loop that allocated two dense n x chunk matrices per chunk,
+// called pace_working_response_cpp() per sub-block (two more n x sub_genes
+// allocations each) and copied every sub-block's result into the chunk matrices.
+// At 1.2M cells and a chunk of 64 that was 1.25 GB of R allocation per chunk,
+// plus the per-sub-block temporaries and the copies. Here z and w are allocated
+// once, as the return value, and each sub-block writes straight into its own
+// columns.
+//
+// eta: when `eta_chunk` has columns it is used as-is -- the fused path already
+// built it at chunk width, and a sub-block is then just a pointer into it, with
+// no copy. Otherwise, and when not seeding, it is built here per sub-block into
+// a scratch buffer, which is what keeps the memory bounded by sub_genes.
+//
+// `first_gene` and `genes` are 1-based, as they come from R. Sub-blocking does
+// not change the result: working_response treats each gene independently.
+// [[Rcpp::export]]
+Rcpp::List pace_working_response_chunk_cpp(
+    const Rcpp::NumericMatrix& eta_chunk, const Rcpp::NumericVector& x1, bool x1_is_unit,
+    const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::NumericMatrix& b,
+    const Rcpp::S4& z_design, const Rcpp::NumericMatrix& u, const Rcpp::IntegerVector& genes,
+    const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene,
+    const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho,
+    const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2,
+    bool seed_iteration, int n_cells, int sub_genes, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+
+  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
+  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
+  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
+  const Rcpp::NumericVector z_values = z_design.slot("x");
+  pace::CscView z_view;
+  z_view.column_pointer = int_span(z_column_pointer);
+  z_view.row_index = int_span(z_row_index);
+  z_view.values = double_span(z_values);
+  z_view.n_rows = z_dims[0];
+  z_view.n_cols = z_dims[1];
+
+  const std::int64_t n = n_cells;
+  const std::int64_t m_chunk = genes.size();
+  Rcpp::NumericMatrix z(n, m_chunk);
+  Rcpp::NumericMatrix w(n, m_chunk);
+  Rcpp::NumericVector colsum_w(m_chunk);
+
+  const bool have_eta = eta_chunk.ncol() > 0;
+  std::vector<int> genes0(static_cast<std::size_t>(m_chunk));
+  for (std::int64_t j = 0; j < m_chunk; ++j) genes0[static_cast<std::size_t>(j)] = genes[j] - 1;
+
+  std::vector<double> eta_scratch;
+  const std::int64_t step = sub_genes > 0 ? sub_genes : m_chunk;
+  for (std::int64_t start = 0; start < m_chunk; start += step) {
+    const std::int64_t len = std::min(step, m_chunk - start);
+    pace::Span<const double> eta_span;
+    if (!seed_iteration) {
+      if (have_eta) {
+        eta_span = pace::Span<const double>(eta_chunk.begin() + start * n, n * len);
+      } else {
+        eta_scratch.resize(static_cast<std::size_t>(n * len));
+        const pace::Status eta_status = pace::eta_block(
+            double_span(x1), x1_is_unit, double_span(x_fixed), p, double_span(b), z_view,
+            double_span(u), pace::Span<const int>(genes0.data() + start, len), n, b.ncol(),
+            pace::Span<double>(eta_scratch.data(), n * len), n_threads, user_interrupted);
+        raise_if_failed(eta_status, "eta block");
+        eta_span = pace::Span<const double>(eta_scratch.data(), n * len);
+      }
+    }
+    const pace::Status status = pace::working_response(
+        eta_span, gene_block(count_holder, first_gene + static_cast<int>(start)),
+        gene_block(ambient_holder, first_gene + static_cast<int>(start)), double_span(offset),
+        double_span(rho), pace::Span<const double>(alpha.begin() + start, len),
+        double_span(sample_weight), nb2, seed_iteration, n, len,
+        pace::Span<double>(z.begin() + start * n, n * len),
+        pace::Span<double>(w.begin() + start * n, n * len),
+        pace::Span<double>(colsum_w.begin() + start, len), n_threads, user_interrupted);
+    raise_if_failed(status, "working response");
+  }
+  return Rcpp::List::create(Rcpp::Named("z") = z, Rcpp::Named("w") = w,
+                            Rcpp::Named("colsum_w") = colsum_w);
 }

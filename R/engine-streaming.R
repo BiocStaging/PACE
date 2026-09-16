@@ -254,23 +254,13 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## C++, so no dense n x |chunk| ambient block is ever formed.
   a_cache <- .pace_as_dgc(ambient_W %*% Y)
 
-  ## ---- SPEED (element-wise): fixed-effect contribution X_fixed %*% coef[,chunk].
-  ## When p == 1 (intercept-only under E^tech) the BLAS matrix-multiply is
-  ## replaced by a row-broadcast: row j is coef[1, chunk[j]] broadcast across
-  ## cells, then each row i scaled by X_fixed[i, 1] (column-major recycling).
-  ## This is ALGEBRAICALLY IDENTICAL to X_fixed %*% coef[, chunk] for ANY p == 1
-  ## (not only X_fixed == 1), and falls back to the dense multiply for p > 1.
+  ## The fixed-effect contribution X_fixed %*% coef[, chunk], as the core builds
+  ## it. When p == 1 (intercept-only under E^tech) the matrix multiply becomes a
+  ## row-broadcast -- coef[1, gene] across cells, each row scaled by X_fixed[i, 1]
+  ## -- which is algebraically identical for ANY p == 1, not only X_fixed == 1,
+  ## and is why x1 is pulled out here. p > 1 uses the dense design instead.
   x1 <- if (p == 1L) as.numeric(X_fixed[, 1L]) else NULL
   x1_is_unit <- !is.null(x1) && all(x1 == 1)
-  .xb_chunk <- function(coef_mat, gene_idx_chk) {
-    if (p == 1L) {
-      bc <- matrix(coef_mat[1L, gene_idx_chk], nrow = n,
-                   ncol = length(gene_idx_chk), byrow = TRUE)
-      if (x1_is_unit) bc else x1 * bc
-    } else {
-      as.matrix(X_fixed %*% coef_mat[, gene_idx_chk, drop = FALSE])
-    }
-  }
 
   ## The anchor mask as the core reads it: either n_types x G with a per-cell
   ## type index, or n x G with none. An empty matrix means no masking.
@@ -295,12 +285,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## part afterwards, which is the association R used. That is bit-identical for
   ## p == 1; for p > 1 R sends X_fixed %*% B through BLAS and the two agree to
   ## about 2e-15, five orders inside the 1e-10 the fixtures are gated at.
-  ## `.eta_block_r()` is kept as the oracle the tests compare against.
+  ## test-linear-predictor.R pins both against the R expression directly.
   x_fixed_dense <- if (p == 1L) matrix(0, 0, 0) else as.matrix(X_fixed)
   x1_or_empty   <- if (is.null(x1) || isTRUE(x1_is_unit)) numeric(0) else x1
-  .eta_block_r <- function(coef_B, coef_U, genes) {
-    .xb_chunk(coef_B, genes) + as.matrix(Z %*% coef_U[, genes, drop = FALSE])
-  }
   .eta_block <- function(coef_B, coef_U, genes) {
     pace_eta_block_cpp(x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p,
                        coef_B, Z, coef_U, as.integer(genes),
@@ -346,9 +333,6 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       iter_precision <- if (last_iter) 0L else as.integer(interior_precision)
 
       m_chk <- length(gene_idx_chk)
-      z_chk <- matrix(0, n, m_chk)
-      w_chk <- matrix(0, n, m_chk)
-      colsum_w <- numeric(m_chk)
       ## The FUSED path also needs the pre-solve linear predictor for its rho
       ## accumulation, whose row sums run over the whole logical chunk, so it
       ## builds eta at chunk width; the default path builds it per sub-block.
@@ -366,20 +350,24 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
         den <- acc$den
         rm(acc)
       }
-      for (sub in seq.int(1L, m_chk, by = sub_genes)) {
-        jj <- sub:min(sub + sub_genes - 1L, m_chk)
-        eta_sub <- if (it == 1L) empty_matrix
-                   else if (!is.null(eta_chk)) eta_chk[, jj, drop = FALSE]
-                   else .eta_block(B, U, gene_idx_chk[jj])
-        working <- pace_working_response_cpp(
-          eta_sub, Y, a_cache, gene_idx_chk[jj][1L], length(jj), offset_vec, add_rho,
-          alpha[gene_idx_chk[jj]], sample_weight_vec, disp_nb2, it == 1L, n, n_threads)
-        z_chk[, jj] <- working$z
-        w_chk[, jj] <- working$w
-        colsum_w[jj] <- working$colsum_w
-        rm(eta_sub, working)
-      }
-      rm(eta_chk)
+      ## The core walks the sub-blocks itself, writing each one straight into
+      ## its own columns of a single z and w. The R loop this replaces allocated
+      ## z_chk and w_chk per chunk, then allocated another pair per sub-block
+      ## inside pace_working_response_cpp() and copied them in -- 1.25 GB of R
+      ## allocation per chunk at 1.2M cells and a chunk of 64, before the
+      ## per-sub-block temporaries. Sub-blocking still bounds the memory: eta is
+      ## built sub_genes genes at a time unless the fused path already supplied
+      ## it at chunk width, in which case a sub-block is a pointer into it.
+      working <- pace_working_response_chunk_cpp(
+        if (it == 1L || is.null(eta_chk)) empty_matrix else eta_chk,
+        x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, B, Z, U,
+        as.integer(gene_idx_chk), Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
+        alpha[gene_idx_chk], sample_weight_vec, disp_nb2, it == 1L, n,
+        as.integer(sub_genes), .pace_thread_count(n_threads))
+      z_chk    <- working$z
+      w_chk    <- working$w
+      colsum_w <- working$colsum_w
+      rm(working, eta_chk)
       lam_chk <- lam_diag_mat[, gene_idx_chk, drop = FALSE]
       ## Keep the ridge out of single precision: below eps_float * sum(w) it is
       ## quantised away, at a threshold that falls as 1/n. The decision is made

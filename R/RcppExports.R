@@ -173,3 +173,7 @@ pace_eta_block_cpp <- function(x1, x1_is_unit, x_fixed, p, b, z_design, u, genes
     .Call(`_PACE_pace_eta_block_cpp`, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, n_threads)
 }
 
+pace_working_response_chunk_cpp <- function(eta_chunk, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, counts, ambient, first_gene, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, sub_genes, n_threads) {
+    .Call(`_PACE_pace_working_response_chunk_cpp`, eta_chunk, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, counts, ambient, first_gene, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, sub_genes, n_threads)
+}
+
