@@ -10,7 +10,6 @@
 #include <Eigen/Dense>
 
 #include <cmath>
-#include <memory>
 #include <limits>
 #include <unordered_map>
 #include <algorithm>
@@ -88,8 +87,10 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
   }
 
   // ---- Stage 1: the within-block tensors of each (block, group) ----
-  // The core's own workers carry the parallelism from here on.
-  std::unique_ptr<EigenThreads> serial_eigen(new EigenThreads(1));
+  // Eigen is pinned to a single thread for the whole of the solve: the core's
+  // own workers carry the parallelism, and Eigen's blocking heuristic changes
+  // with its thread count. See the note at stage 2 for what that cost us.
+  const EigenThreads serial_eigen(1);
   std::vector<std::vector<Matrix>> ztwz(n_blocks);
   std::vector<std::vector<Matrix>> xtwz(n_blocks);
   std::vector<std::vector<Matrix>> ztwz_rhs(n_blocks);
@@ -231,8 +232,23 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
   }
 
   // ---- Stage 2: the cross-block tensors, over the cells two groups share ----
-  // On the calling thread, with Eigen's own parallelism, as before.
-  serial_eigen.reset();
+  // On the calling thread, and -- unlike the kernel this replaced -- with Eigen
+  // still pinned to one thread.
+  //
+  // This used to release the pin so Eigen could parallelise the product itself.
+  // That made the fit depend on OMP_NUM_THREADS: Eigen takes a different branch
+  // of evaluateProductBlockingSizesHeuristic above one thread, capping kc at
+  // 320, which changes how many partial sums accumulate down the cell axis.
+  // Measured on melanoma between OMP_NUM_THREADS=1 and unset: max|dB| 2.28e-05,
+  // 1.68% in the worst coefficient, amplified from a last-bit difference by 13
+  // IRLS iterations. Full BC has one random-effect block, never reaches this
+  // loop, and was bit-identical either way -- which is what identified the site.
+  // The calls did not move on either cohort (BC 1637, Mel 46, nothing gained or
+  // lost), so nothing reported was ever wrong; but a fit that depends on an
+  // environment variable rather than on the `threads` argument is not something
+  // to ship, least of all to a builder that may or may not have OpenMP.
+  //
+  // Pinning is free: the serial run measured 35.3 s against 36.7 s.
   std::vector<CrossBlock<T>> cross;
   for (int b1 = 0; b1 + 1 < n_blocks; ++b1) {
     const int n_terms_1 = blocks[b1].n_terms;
@@ -282,7 +298,6 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
   }
 
   // ---- Stage 3: one solve per gene ----
-  serial_eigen.reset(new EigenThreads(1));
   const T missing = std::numeric_limits<T>::quiet_NaN();
   for (std::int64_t k = 0; k < p * n_genes; ++k) beta_out[k] = missing;
   for (std::int64_t k = 0; k < q_total * n_genes; ++k) u_out[k] = missing;
