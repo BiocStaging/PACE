@@ -736,11 +736,26 @@ build_random_design_multi <- function(df, re_specs) {
     n_threads <- tryCatch(max(1L, BiocParallel::bpworkers(BPPARAM)),
                           error = function(e) 1L)
 
+  ## Take the columns only when they really are a subset. Every caller reaches
+  ## here with the identity -- the chunk loops subset w, z and lam_diag before
+  ## the call and then pass seq_along() of the chunk -- and subsetting by the
+  ## identity still copies the whole matrix. At 1.2M cells and the default
+  ## 128-gene chunk that is 1.25 GB apiece, three times over, to rebuild the
+  ## matrices we were handed. The binding borrows these through a const span
+  ## and the core copies into its own storage, so passing them through
+  ## unsubsetted cannot be seen by the caller.
+  columns_are_identity <- identical(gene_idx, seq_len(ncol(w)))
+  if (!columns_are_identity) {
+    w        <- w[, gene_idx, drop = FALSE]
+    z        <- z[, gene_idx, drop = FALSE]
+    lam_diag <- lam_diag[, gene_idx, drop = FALSE]
+  }
+
   res <- pace_solve_genes_chunk_cpp(
     x_fixed  = X,
-    w        = w[, gene_idx, drop = FALSE],
-    z        = z[, gene_idx, drop = FALSE],
-    lam_diag = lam_diag[, gene_idx, drop = FALSE],
+    w        = w,
+    z        = z,
+    lam_diag = lam_diag,
     q_total  = q,
     blocks   = blocks,
     terms_list = lapply(X_terms_list, function(m) {
