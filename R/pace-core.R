@@ -467,7 +467,7 @@ pace_fit_streaming <- function(Y, df, types = NULL,
                                tau_shrinkage = "adaptive",
                                alpha_warmup = 6, early_stop_tol = 2e-2, min_iter = 12L,
                                ## speed option, see fit_pace_mvpql_streaming()
-                               alpha_zero_collapse = FALSE,
+                               alpha_zero_collapse = TRUE,
                                fuse = FALSE,
                                ## DEPRECATED: the fit keeps the per-cell-type statistics the
                                ## readouts need, and mu is rebuilt on demand from the fit and

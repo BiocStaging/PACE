@@ -79,10 +79,16 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      alpha_warmup      = 10L,
                                      ## alpha_zero_collapse: evaluate the NB1 dispersion
                                      ##   likelihood with the zero-count block collapsed into
-                                     ##   one term (algebraically exact and about twice as
-                                     ##   fast on a sparse panel, but the reassociated sum
-                                     ##   moves alpha in its last digits, and the fit with it).
-                                     alpha_zero_collapse = FALSE,
+                                     ##   one term. log f(0; mu/a, mu) = -(mu/a) log1p(a) depends
+                                     ##   on the cell only through mu, so the whole zero block is
+                                     ##   one term -- exact algebra, but the reassociated sum moves
+                                     ##   alpha in its last digits (~1e-7 relative, measured), and
+                                     ##   the fit with it. On a sparse panel ~85% of a gene's cells
+                                     ##   are zeros, which is why it is worth doing. Gated on both
+                                     ##   manuscript cohorts at full scale: breast cancer 1,637 and
+                                     ##   melanoma 46 calls, none gained or lost, no sign flips,
+                                     ##   SPP1 unchanged; fits 1.20x and 1.12x faster.
+                                     alpha_zero_collapse = TRUE,
                                      ## early_stop_tol / min_iter: break the IRLS loop once the streamed
                                      ##   MEAN rel_delta (mean over cell-genes of |Delta eta|/max(|eta|,1e-3))
                                      ##   falls below early_stop_tol, but never before min_iter iterations.
