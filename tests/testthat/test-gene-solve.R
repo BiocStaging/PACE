@@ -91,6 +91,28 @@ test_that("the engine does not depend on the thread count", {
   }
 })
 
+test_that("the tiled path agrees with the oracle and not with the thread count", {
+  # Stage 1 tiles a group's genes only once the group passes min_cells_to_tile
+  # (4096 cells). Every other test here uses 600 cells over 5 groups, so groups
+  # land in the low hundreds and NONE of them reach the tiled branch -- which is
+  # the branch every production fit takes, since one cell type routinely holds
+  # most of a cohort. Two groups over 12,000 cells puts about 6,000 in each.
+  design <- synthetic_design(n = 12000L, n_groups = 2L, n_genes = 12L, seed = 41L)
+  reference <- reference_gene_solve(design$X, design$terms_list, design$group_list,
+                                    design$blocks, design$w, design$z, design$lam)
+  fitted <- solve_with_engine(design)
+  expect_equal(fitted$B, reference$B, tolerance = 1e-9)
+  expect_equal(fitted$U, reference$U, tolerance = 1e-9)
+  expect_equal(fitted$Ainv_diag, reference$Ainv_diag, tolerance = 1e-9)
+
+  # The tile partition is a function of the gene count alone, so the workers may
+  # divide it any way they like without the answer moving.
+  for (single in c(FALSE, TRUE)) {
+    expect_identical(solve_with_engine(design, single, 1L),
+                     solve_with_engine(design, single, 4L))
+  }
+})
+
 test_that("a singular gene leaves its column missing rather than a wrong answer", {
   design <- synthetic_design(n_genes = 3L)
   design$w[, 2] <- 0                      # no information at all for this gene

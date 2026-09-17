@@ -115,7 +115,17 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
     // would have taken in one big multiply. Eigen's serial blocking picks kc and
     // mc independently of the number of columns, and its nc loop sits inside the
     // k loop, so an output column sees the same sequence of partial sums either
-    // way: the result is bit-identical, which a test asserts.
+    // way, and the result is bit-identical.
+    //
+    // No test in this package asserts that last step, and the comment that used
+    // to claim one was wrong. The fixtures cannot reach it -- they are 2k-9k
+    // cells over 6-13 types, so their groups sit in the low hundreds and take
+    // the untiled path -- and no test can toggle min_cells_to_tile from R
+    // either, since it is a compile-time constant. The evidence for tiled ==
+    // untiled is the full-cohort identical() comparison recorded with commit
+    // 2a9e1e8. What test-gene-solve.R does cover is weaker but real: that the
+    // tiled path agrees with the explicit-Z oracle and does not move with the
+    // thread count.
     for (int g = 0; g < n_groups; ++g) {
         const int first = blocks[b].group_offsets[g];
         const int last = blocks[b].group_offsets[g + 1];
