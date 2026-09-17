@@ -13,6 +13,8 @@
 #include <memory>
 #include <limits>
 #include <unordered_map>
+#include <algorithm>
+#include <utility>
 #include <vector>
 
 #include "thread_pool.hpp"
@@ -98,8 +100,23 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
     xtwz[b].resize(n_groups);
     ztwz_rhs[b].resize(n_groups);
     const Matrix& block_terms = terms[b];
-    auto body = [&](std::int64_t begin, std::int64_t end) {
-      for (std::int64_t g = begin; g < end; ++g) {
+    // Groups run one at a time and the GENES are what is parallelised.
+    //
+    // Parallelising over groups instead cannot balance: a group's work is
+    // proportional to its cell count, and one cell type routinely holds most of
+    // the cohort (81.5% in the melanoma cohort, 69.6% in the 1.2M melanoma TMA).
+    // The makespan is then that single group no matter how many workers there
+    // are, which is why this stage measured 19.9 s on four threads and 18.5 s on
+    // eight while the dispersion step in the same run scaled 1.51x.
+    //
+    // Tiles are multiples of Eigen's gebp register width (Traits::nr == 4 for
+    // float and double on this target) and any ragged tail is kept as its own
+    // final tile, so every column goes through the same nr-wide kernel path it
+    // would have taken in one big multiply. Eigen's serial blocking picks kc and
+    // mc independently of the number of columns, and its nc loop sits inside the
+    // k loop, so an output column sees the same sequence of partial sums either
+    // way: the result is bit-identical, which a test asserts.
+    for (int g = 0; g < n_groups; ++g) {
         const int first = blocks[b].group_offsets[g];
         const int last = blocks[b].group_offsets[g + 1];
         const int n_g = last - first;
@@ -116,42 +133,91 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
           terms_g.row(i) = block_terms.row(row);
           x_g.row(i) = x_fixed.row(row);
         }
-        // Column-wise gather, sequential within each source column.
-        Matrix w_g(n_g, n_genes);
-        Matrix z_g(n_g, n_genes);
-        for (std::int64_t j = 0; j < n_genes; ++j) {
-          const T* w_source = w.col(j).data();
-          const T* z_source = z.col(j).data();
-          T* w_target = w_g.col(j).data();
-          T* z_target = z_g.col(j).data();
-          for (int i = 0; i < n_g; ++i) {
-            const int row = blocks[b].group_cells[first + i];
-            w_target[i] = w_source[row];
-            z_target[i] = z_source[row];
-          }
-        }
         Matrix term_pairs(n_g, n_terms * n_terms);
         for (int t2 = 0; t2 < n_terms; ++t2) {
           for (int t1 = 0; t1 < n_terms; ++t1) {
             term_pairs.col(t2 * n_terms + t1) = terms_g.col(t1).cwiseProduct(terms_g.col(t2));
           }
         }
-        ztwz[b][g].noalias() = term_pairs.transpose() * w_g;
-
         Matrix fixed_term_pairs(n_g, p * n_terms);
         for (int t = 0; t < n_terms; ++t) {
           for (std::int64_t pi = 0; pi < p; ++pi) {
             fixed_term_pairs.col(t * p + pi) = x_g.col(pi).cwiseProduct(terms_g.col(t));
           }
         }
-        xtwz[b][g].noalias() = fixed_term_pairs.transpose() * w_g;
+        ztwz[b][g].resize(n_terms * n_terms, n_genes);
+        xtwz[b][g].resize(p * n_terms, n_genes);
+        ztwz_rhs[b][g].resize(n_terms, n_genes);
 
-        const Matrix weighted_z = w_g.cwiseProduct(z_g);
-        ztwz_rhs[b][g].noalias() = terms_g.transpose() * weighted_z;
-      }
-    };
-    const Status status = parallel_for(n_groups, n_threads, 1, body, interrupted);
-    if (!status.is_ok()) return status;
+        // Only large groups are tiled. Eigen's serial blocking picks mc
+        // independently of the column count ONLY once k (here n_g) is big
+        // enough to be k-blocked; below that mc moves with the column count and
+        // tiling would change the arithmetic. Small groups also carry too
+        // little work for the threading to pay. The fixtures are 2k-9k cells
+        // over 6-13 types, so their groups sit in the low hundreds and take the
+        // untiled path -- which is why those configurations stay bit-identical.
+        const int min_cells_to_tile = 4096;
+        if (n_g < min_cells_to_tile) {
+          Matrix w_g(n_g, n_genes);
+          Matrix z_g(n_g, n_genes);
+          for (std::int64_t j = 0; j < n_genes; ++j) {
+            const T* w_source = w.col(j).data();
+            const T* z_source = z.col(j).data();
+            T* w_target = w_g.col(j).data();
+            T* z_target = z_g.col(j).data();
+            for (int i = 0; i < n_g; ++i) {
+              const int row = blocks[b].group_cells[first + i];
+              w_target[i] = w_source[row];
+              z_target[i] = z_source[row];
+            }
+          }
+          ztwz[b][g].noalias() = term_pairs.transpose() * w_g;
+          xtwz[b][g].noalias() = fixed_term_pairs.transpose() * w_g;
+          const Matrix weighted_z = w_g.cwiseProduct(z_g);
+          ztwz_rhs[b][g].noalias() = terms_g.transpose() * weighted_z;
+          continue;
+        }
+
+        // Column tiles: multiples of four, with the ragged tail left whole.
+        const std::int64_t register_width = 4;
+        const std::int64_t aligned = (n_genes / register_width) * register_width;
+        std::vector<std::pair<std::int64_t, std::int64_t>> tiles;
+        const std::int64_t tile_width = register_width * 4;
+        for (std::int64_t start = 0; start < aligned; start += tile_width) {
+          tiles.emplace_back(start, std::min(tile_width, aligned - start));
+        }
+        if (aligned < n_genes) tiles.emplace_back(aligned, n_genes - aligned);
+
+        const int* group_cells = blocks[b].group_cells.data + first;
+        auto tile_body = [&](std::int64_t begin, std::int64_t end) {
+          for (std::int64_t t = begin; t < end; ++t) {
+            const std::int64_t column = tiles[static_cast<std::size_t>(t)].first;
+            const std::int64_t width = tiles[static_cast<std::size_t>(t)].second;
+            Matrix w_tile(n_g, width);
+            Matrix z_tile(n_g, width);
+            for (std::int64_t j = 0; j < width; ++j) {
+              const T* w_source = w.col(column + j).data();
+              const T* z_source = z.col(column + j).data();
+              T* w_target = w_tile.col(j).data();
+              T* z_target = z_tile.col(j).data();
+              for (int i = 0; i < n_g; ++i) {
+                w_target[i] = w_source[group_cells[i]];
+                z_target[i] = z_source[group_cells[i]];
+              }
+            }
+            ztwz[b][g].middleCols(column, width).noalias() =
+                term_pairs.transpose() * w_tile;
+            xtwz[b][g].middleCols(column, width).noalias() =
+                fixed_term_pairs.transpose() * w_tile;
+            const Matrix weighted_z = w_tile.cwiseProduct(z_tile);
+            ztwz_rhs[b][g].middleCols(column, width).noalias() =
+                terms_g.transpose() * weighted_z;
+          }
+        };
+        const Status tile_status = parallel_for(static_cast<std::int64_t>(tiles.size()),
+                                                n_threads, 1, tile_body, interrupted);
+        if (!tile_status.is_ok()) return tile_status;
+    }
   }
 
   // ---- Stage 2: the cross-block tensors, over the cells two groups share ----
