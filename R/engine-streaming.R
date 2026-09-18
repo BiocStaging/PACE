@@ -341,120 +341,145 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     RD_DIAG <- nzchar(Sys.getenv("R_RD_DIAG"))
 
     chk_starts <- seq.int(1L, g_n, by = max(1L, as.integer(chunk_size)))
-    for (cs in chk_starts) {
-      gene_idx_chk   <- cs:min(cs + chunk_size - 1L, g_n)
-      iter_precision <- if (last_iter) 0L else as.integer(interior_precision)
-
-      m_chk <- length(gene_idx_chk)
-      ## The FUSED path also needs the pre-solve linear predictor for its rho
-      ## accumulation, whose row sums run over the whole logical chunk, so it
-      ## builds eta at chunk width; the default path builds it per sub-block.
-      eta_chk <- if (fuse_rho && it > 1L) .eta_block(B, U, gene_idx_chk) else NULL
-      if (fuse_rho) {
-        ## num/den from the PRE-solve B,U (one-iteration lag vs the dense
-        ## post-solve; same fixed point), with no convergence metric: the fused
-        ## path uses a coefficient metric below.
-        acc <- pace_rho_accumulate_cpp(
-          if (it == 1L) empty_matrix else eta_chk, empty_matrix, Y, a_cache, gene_idx_chk[1L],
-          offset_vec, add_rho, alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
-          seed_iteration = (it == 1L), seed_previous = FALSE, n_cells = n, n_genes_in = m_chk,
-          want_tail_counts = FALSE, n_threads = .pace_thread_count(n_threads))
-        num <- acc$num
-        den <- acc$den
-        rm(acc)
-      }
-      ## The core walks the sub-blocks itself, writing each one straight into
-      ## its own columns of a single z and w. The R loop this replaces allocated
-      ## z_chk and w_chk per chunk, then allocated another pair per sub-block
-      ## inside pace_working_response_cpp() and copied them in -- 1.25 GB of R
-      ## allocation per chunk at 1.2M cells and a chunk of 64, before the
-      ## per-sub-block temporaries. Sub-blocking still bounds the memory: eta is
-      ## built sub_genes genes at a time unless the fused path already supplied
-      ## it at chunk width, in which case a sub-block is a pointer into it.
-      working <- pace_working_response_chunk_cpp(
-        if (it == 1L || is.null(eta_chk)) empty_matrix else eta_chk,
-        x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, B, Z, U,
-        as.integer(gene_idx_chk), Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
-        alpha[gene_idx_chk], sample_weight_vec, disp_nb2, it == 1L, n,
-        as.integer(sub_genes), .pace_thread_count(n_threads))
-      z_chk    <- working$z
-      w_chk    <- working$w
-      colsum_w <- working$colsum_w
-      rm(working, eta_chk)
-      lam_chk <- lam_diag_mat[, gene_idx_chk, drop = FALSE]
-      ## Keep the ridge out of single precision: below eps_float * sum(w) it is
-      ## quantised away, at a threshold that falls as 1/n. The decision is made
-      ## over the whole logical chunk, exactly as before the sub-block split.
-      if (iter_precision != 0L &&
-          .ridge_needs_double_from(suppressWarnings(min(lam_chk, na.rm = TRUE)),
-                                   suppressWarnings(max(colsum_w))))
-        iter_precision <- 0L
-
-      per_gene_chk <- .solve_genes_chunk_multiblock(
-        X_fixed, re$X_terms_list, re$cell_grp_list, re$cells_by_grp_list,
-        w_chk, z_chk, lam_chk, re$blocks,
-        gene_idx = seq_along(gene_idx_chk),
-        n_threads = n_threads,
-        interior_precision = iter_precision,
-        BPPARAM = BPPARAM)
-      ## LOSSLESS NaN GUARD (root-cause fix): the float (interior_precision=1)
-      ## per-gene Cholesky in the compiled solve returns a NaN BLUP column when
-      ## a gene's working-weight system is borderline in single precision (rare,
-      ## run-to-run-variable because float OMP dgemm accumulation order is not
-      ## bit-reproducible). A single NaN BLUP column makes Z%*%U[,g] NaN, which
-      ## NaN-poisons den = rowSums(WA * a) for EVERY cell with nonzero ambient in
-      ## that gene (i.e. nearly all cells) and would silently collapse add_rho to
-      ## its prior panel-wide -- masquerading as "a few degenerate cells". We
-      ## detect any non-finite-BLUP gene in this chunk and RE-SOLVE it in DOUBLE
-      ## precision (interior_precision=0), which is numerically robust (the 1/tau
-      ## ridge makes every per-gene system positive definite). Double re-solve was
-      ## verified NaN-free under stress (lam up to 1e8, alpha up to 50). This keeps
-      ## ALL genes valid -- no gene loses its BLUP -- and is a no-op when the float
-      ## solve already returned finite values (the canonical case).
-      ## A gene is bad if any of its beta or u entries is non-finite. colSums
-      ## carries a NaN or an Inf straight through, so one pass over the two
-      ## matrices answers it for every gene at once.
-      is_bad <- function(fit) which(!is.finite(colSums(fit$B)) | !is.finite(colSums(fit$U)))
-      bad_jj <- is_bad(per_gene_chk)
-      if (length(bad_jj) && iter_precision != 0L) {
-        if (verbose)
-          cat(sprintf("    [nan-guard] it=%d chunk@%d: %d gene(s) NaN in float solve -> re-solving in double\n",
-                      it, cs, length(bad_jj)))
-        redo <- .solve_genes_chunk_multiblock(
-          X_fixed, re$X_terms_list, re$cell_grp_list, re$cells_by_grp_list,
-          w_chk[, bad_jj, drop = FALSE], z_chk[, bad_jj, drop = FALSE],
-          lam_chk[, bad_jj, drop = FALSE], re$blocks,
-          gene_idx = seq_along(bad_jj),
-          n_threads = n_threads,
-          interior_precision = 0L,
-          BPPARAM = BPPARAM)
-        per_gene_chk$B[, bad_jj] <- redo$B
-        per_gene_chk$U[, bad_jj] <- redo$U
-        per_gene_chk$Ainv_diag[, bad_jj] <- redo$Ainv_diag
-        bad_jj <- is_bad(per_gene_chk)          ## did the repair actually take?
-      }
-      ## Anything still non-finite is unrecoverable and goes into the saved fit,
-      ## so count it and say so on EVERY iteration -- including the last, where
-      ## the interior is already double and the repair above cannot help. This
-      ## silence is what let a fit report converged = TRUE with all-NaN genes.
-      if (length(bad_jj)) {
-        nan_genes_iter <- c(nan_genes_iter, gene_idx_chk[bad_jj])
-        if (verbose)
-          cat(sprintf("    [nan-guard] it=%d chunk@%d: %d gene(s) STILL non-finite after double solve\n",
-                      it, cs, length(bad_jj)))
-      }
-      ## Whole blocks, not one gene at a time. The columns are already in gene
-      ## order and contiguous, so these are three (or five) assignments instead
-      ## of six per gene.
-      random_rows <- (p + 1):(p + q)
-      B[, gene_idx_chk]      <- per_gene_chk$B
-      U[, gene_idx_chk]      <- per_gene_chk$U
-      re_var[, gene_idx_chk] <- pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0)
+    if (!fuse_rho) {
+      ## The whole chunk loop runs in the core. The design is converted once for
+      ## the pass rather than once per chunk, z and w are buffers that never
+      ## become R matrices, and only the finished coefficients come back. The
+      ## calls it makes, and their order, are the ones the R loop below makes.
+      pass1 <- pace_fit_pass1_cpp(
+        x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, X_fixed, p, Z,
+        re$blocks, re$X_terms_list, re$cells_by_grp_list, re$cell_grp_list,
+        B, U, lam_diag_mat, Y, a_cache, offset_vec, add_rho, alpha, sample_weight_vec,
+        disp_nb2, it == 1L, n, as.integer(chunk_size), as.integer(sub_genes),
+        as.integer(interior_precision), last_iter, .pace_thread_count(n_threads))
+      B      <- pass1$B
+      U      <- pass1$U
+      re_var <- pass1$re_var
       if (last_iter) {
-        se_B[, gene_idx_chk] <- sqrt(pmax(per_gene_chk$Ainv_diag[seq_len(p), , drop = FALSE], 0))
-        se_U[, gene_idx_chk] <- sqrt(pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0))
+        se_B <- pass1$se_B
+        se_U <- pass1$se_U
       }
-      rm(per_gene_chk, z_chk, w_chk, lam_chk, colsum_w)
+      nan_genes_iter <- pass1$nan_genes
+      if (length(nan_genes_iter) && verbose)
+        cat(sprintf("    [nan-guard] it=%d: %d gene(s) STILL non-finite after double solve\n",
+                    it, length(nan_genes_iter)))
+      rm(pass1)
+    } else {
+      for (cs in chk_starts) {
+        gene_idx_chk   <- cs:min(cs + chunk_size - 1L, g_n)
+        iter_precision <- if (last_iter) 0L else as.integer(interior_precision)
+
+        m_chk <- length(gene_idx_chk)
+        ## The FUSED path also needs the pre-solve linear predictor for its rho
+        ## accumulation, whose row sums run over the whole logical chunk, so it
+        ## builds eta at chunk width; the default path builds it per sub-block.
+        eta_chk <- if (fuse_rho && it > 1L) .eta_block(B, U, gene_idx_chk) else NULL
+        if (fuse_rho) {
+          ## num/den from the PRE-solve B,U (one-iteration lag vs the dense
+          ## post-solve; same fixed point), with no convergence metric: the fused
+          ## path uses a coefficient metric below.
+          acc <- pace_rho_accumulate_cpp(
+            if (it == 1L) empty_matrix else eta_chk, empty_matrix, Y, a_cache, gene_idx_chk[1L],
+            offset_vec, add_rho, alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
+            seed_iteration = (it == 1L), seed_previous = FALSE, n_cells = n, n_genes_in = m_chk,
+            want_tail_counts = FALSE, n_threads = .pace_thread_count(n_threads))
+          num <- acc$num
+          den <- acc$den
+          rm(acc)
+        }
+        ## The core walks the sub-blocks itself, writing each one straight into
+        ## its own columns of a single z and w. The R loop this replaces allocated
+        ## z_chk and w_chk per chunk, then allocated another pair per sub-block
+        ## inside pace_working_response_cpp() and copied them in -- 1.25 GB of R
+        ## allocation per chunk at 1.2M cells and a chunk of 64, before the
+        ## per-sub-block temporaries. Sub-blocking still bounds the memory: eta is
+        ## built sub_genes genes at a time unless the fused path already supplied
+        ## it at chunk width, in which case a sub-block is a pointer into it.
+        working <- pace_working_response_chunk_cpp(
+          if (it == 1L || is.null(eta_chk)) empty_matrix else eta_chk,
+          x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, B, Z, U,
+          as.integer(gene_idx_chk), Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
+          alpha[gene_idx_chk], sample_weight_vec, disp_nb2, it == 1L, n,
+          as.integer(sub_genes), .pace_thread_count(n_threads))
+        z_chk    <- working$z
+        w_chk    <- working$w
+        colsum_w <- working$colsum_w
+        rm(working, eta_chk)
+        lam_chk <- lam_diag_mat[, gene_idx_chk, drop = FALSE]
+        ## Keep the ridge out of single precision: below eps_float * sum(w) it is
+        ## quantised away, at a threshold that falls as 1/n. The decision is made
+        ## over the whole logical chunk, exactly as before the sub-block split.
+        if (iter_precision != 0L &&
+            .ridge_needs_double_from(suppressWarnings(min(lam_chk, na.rm = TRUE)),
+                                     suppressWarnings(max(colsum_w))))
+          iter_precision <- 0L
+
+        per_gene_chk <- .solve_genes_chunk_multiblock(
+          X_fixed, re$X_terms_list, re$cell_grp_list, re$cells_by_grp_list,
+          w_chk, z_chk, lam_chk, re$blocks,
+          gene_idx = seq_along(gene_idx_chk),
+          n_threads = n_threads,
+          interior_precision = iter_precision,
+          BPPARAM = BPPARAM)
+        ## LOSSLESS NaN GUARD (root-cause fix): the float (interior_precision=1)
+        ## per-gene Cholesky in the compiled solve returns a NaN BLUP column when
+        ## a gene's working-weight system is borderline in single precision (rare,
+        ## run-to-run-variable because float OMP dgemm accumulation order is not
+        ## bit-reproducible). A single NaN BLUP column makes Z%*%U[,g] NaN, which
+        ## NaN-poisons den = rowSums(WA * a) for EVERY cell with nonzero ambient in
+        ## that gene (i.e. nearly all cells) and would silently collapse add_rho to
+        ## its prior panel-wide -- masquerading as "a few degenerate cells". We
+        ## detect any non-finite-BLUP gene in this chunk and RE-SOLVE it in DOUBLE
+        ## precision (interior_precision=0), which is numerically robust (the 1/tau
+        ## ridge makes every per-gene system positive definite). Double re-solve was
+        ## verified NaN-free under stress (lam up to 1e8, alpha up to 50). This keeps
+        ## ALL genes valid -- no gene loses its BLUP -- and is a no-op when the float
+        ## solve already returned finite values (the canonical case).
+        ## A gene is bad if any of its beta or u entries is non-finite. colSums
+        ## carries a NaN or an Inf straight through, so one pass over the two
+        ## matrices answers it for every gene at once.
+        is_bad <- function(fit) which(!is.finite(colSums(fit$B)) | !is.finite(colSums(fit$U)))
+        bad_jj <- is_bad(per_gene_chk)
+        if (length(bad_jj) && iter_precision != 0L) {
+          if (verbose)
+            cat(sprintf("    [nan-guard] it=%d chunk@%d: %d gene(s) NaN in float solve -> re-solving in double\n",
+                        it, cs, length(bad_jj)))
+          redo <- .solve_genes_chunk_multiblock(
+            X_fixed, re$X_terms_list, re$cell_grp_list, re$cells_by_grp_list,
+            w_chk[, bad_jj, drop = FALSE], z_chk[, bad_jj, drop = FALSE],
+            lam_chk[, bad_jj, drop = FALSE], re$blocks,
+            gene_idx = seq_along(bad_jj),
+            n_threads = n_threads,
+            interior_precision = 0L,
+            BPPARAM = BPPARAM)
+          per_gene_chk$B[, bad_jj] <- redo$B
+          per_gene_chk$U[, bad_jj] <- redo$U
+          per_gene_chk$Ainv_diag[, bad_jj] <- redo$Ainv_diag
+          bad_jj <- is_bad(per_gene_chk)          ## did the repair actually take?
+        }
+        ## Anything still non-finite is unrecoverable and goes into the saved fit,
+        ## so count it and say so on EVERY iteration -- including the last, where
+        ## the interior is already double and the repair above cannot help. This
+        ## silence is what let a fit report converged = TRUE with all-NaN genes.
+        if (length(bad_jj)) {
+          nan_genes_iter <- c(nan_genes_iter, gene_idx_chk[bad_jj])
+          if (verbose)
+            cat(sprintf("    [nan-guard] it=%d chunk@%d: %d gene(s) STILL non-finite after double solve\n",
+                        it, cs, length(bad_jj)))
+        }
+        ## Whole blocks, not one gene at a time. The columns are already in gene
+        ## order and contiguous, so these are three (or five) assignments instead
+        ## of six per gene.
+        random_rows <- (p + 1):(p + q)
+        B[, gene_idx_chk]      <- per_gene_chk$B
+        U[, gene_idx_chk]      <- per_gene_chk$U
+        re_var[, gene_idx_chk] <- pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0)
+        if (last_iter) {
+          se_B[, gene_idx_chk] <- sqrt(pmax(per_gene_chk$Ainv_diag[seq_len(p), , drop = FALSE], 0))
+          se_U[, gene_idx_chk] <- sqrt(pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0))
+        }
+        rm(per_gene_chk, z_chk, w_chk, lam_chk, colsum_w)
+      }
     }
 
     ## ----- Per-cell contamination update (streaming rho accumulation) -----

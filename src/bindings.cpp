@@ -857,10 +857,6 @@ Rcpp::NumericMatrix pace_data_informed_weights_cpp(const Rcpp::NumericMatrix& de
   return weights;
 }
 
-// The per-gene penalised WLS solve of one chunk (see core/gene_solve.hpp).
-// `blocks` carries col_offset / K_terms / K_groups; `cells_by_grp_list` and
-// `cell_grp_list` are 1-based, as R built them.
-// [[Rcpp::export]]
 // The random-effect design, converted out of R once. The per-chunk solve
 // binding used to rebuild this on EVERY call, and `group_cells` alone is one int
 // per cell per block -- 9.8 MB at 1.2M cells, rebuilt 39 chunks x 13 iterations.
@@ -913,6 +909,10 @@ SolveDesign build_solve_design(const Rcpp::List& blocks, const Rcpp::List& terms
   return design;
 }
 
+// The per-gene penalised WLS solve of one chunk (see core/gene_solve.hpp).
+// `blocks` carries col_offset / K_terms / K_groups; `cells_by_grp_list` and
+// `cell_grp_list` are 1-based, as R built them.
+// [[Rcpp::export]]
 Rcpp::List pace_solve_genes_chunk_cpp(const Rcpp::NumericMatrix& x_fixed,
                                       const Rcpp::NumericMatrix& w, const Rcpp::NumericMatrix& z,
                                       const Rcpp::NumericMatrix& lam_diag, int q_total,
@@ -1115,6 +1115,216 @@ Rcpp::NumericMatrix pace_eta_block_cpp(const Rcpp::NumericVector& x1, bool x1_is
 //
 // `first_gene` and `genes` are 1-based, as they come from R. Sub-blocking does
 // not change the result: working_response treats each gene independently.
+// One IRLS pass over every gene chunk, without returning to R between them.
+//
+// This is the chunk loop that used to live in fit_pace_mvpql_streaming(). Per
+// chunk R built the working response, handed z and w back, called the solve,
+// took three matrices back, and wrote them into B and U. The design was
+// reconverted on every one of those solve calls, and z, w and lam were R
+// matrices allocated per chunk. Here the design is converted ONCE, z and w are
+// plain buffers reused across chunks, and only the finished B, U, re_var and
+// standard errors cross back.
+//
+// The arithmetic is the same calls in the same order, so the fit is unchanged.
+// [[Rcpp::export]]
+Rcpp::List pace_fit_pass1_cpp(
+    const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed,
+    const Rcpp::NumericMatrix& solve_x_fixed, int p,
+    const Rcpp::S4& z_design, const Rcpp::List& blocks, const Rcpp::List& terms_list,
+    const Rcpp::List& cells_by_group_list, const Rcpp::List& cell_group_list,
+    const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in,
+    const Rcpp::NumericMatrix& lam_diag, const Rcpp::S4& counts, const Rcpp::S4& ambient,
+    const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho,
+    const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2,
+    bool seed_iteration, int n_cells, int chunk_size, int sub_genes, int interior_precision,
+    bool last_iter, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const std::int64_t n = n_cells;
+  const std::int64_t q_total = u_in.nrow();
+  const std::int64_t n_genes_total = u_in.ncol();
+
+  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
+  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
+  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
+  const Rcpp::NumericVector z_values = z_design.slot("x");
+  pace::CscView z_view;
+  z_view.column_pointer = int_span(z_column_pointer);
+  z_view.row_index = int_span(z_row_index);
+  z_view.values = double_span(z_values);
+  z_view.n_rows = z_dims[0];
+  z_view.n_cols = z_dims[1];
+
+  // Converted once for the whole pass, not once per chunk.
+  const SolveDesign design =
+      build_solve_design(blocks, terms_list, cells_by_group_list, cell_group_list);
+
+  Rcpp::NumericMatrix beta_out(p, n_genes_total);
+  Rcpp::NumericMatrix u_out(q_total, n_genes_total);
+  Rcpp::NumericMatrix re_var(q_total, n_genes_total);
+  Rcpp::NumericMatrix se_beta(p, n_genes_total);
+  Rcpp::NumericMatrix se_u(q_total, n_genes_total);
+  std::vector<int> nan_genes;
+
+  const std::int64_t width = std::min<std::int64_t>(chunk_size, n_genes_total);
+  std::vector<double> z_buffer(static_cast<std::size_t>(n * width));
+  std::vector<double> w_buffer(static_cast<std::size_t>(n * width));
+  std::vector<double> colsum_w(static_cast<std::size_t>(width));
+  std::vector<double> eta_scratch;
+  std::vector<int> chunk_genes(static_cast<std::size_t>(width));
+  std::vector<double> chunk_beta(static_cast<std::size_t>(p * width));
+  std::vector<double> chunk_u(static_cast<std::size_t>(q_total * width));
+  std::vector<double> chunk_ainv(static_cast<std::size_t>((p + q_total) * width));
+
+  for (std::int64_t first = 0; first < n_genes_total; first += width) {
+    const std::int64_t m_chunk = std::min(width, n_genes_total - first);
+    for (std::int64_t j = 0; j < m_chunk; ++j) {
+      chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
+    }
+
+    // ---- the working response, a sub-block of genes at a time ----
+    const std::int64_t step = sub_genes > 0 ? std::min<std::int64_t>(sub_genes, m_chunk) : m_chunk;
+    for (std::int64_t start = 0; start < m_chunk; start += step) {
+      const std::int64_t len = std::min(step, m_chunk - start);
+      pace::Span<const double> eta_span;
+      if (!seed_iteration) {
+        eta_scratch.resize(static_cast<std::size_t>(n * len));
+        const pace::Status eta_status = pace::eta_block(
+            double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(b_in), z_view,
+            const_span(u_in), pace::Span<const int>(chunk_genes.data() + start, len), n,
+            n_genes_total, pace::Span<double>(eta_scratch.data(), n * len), n_threads,
+            user_interrupted);
+        raise_if_failed(eta_status, "eta block");
+        eta_span = pace::Span<const double>(eta_scratch.data(), n * len);
+      }
+      const pace::Status status = pace::working_response(
+          eta_span, gene_block(count_holder, static_cast<int>(first + start) + 1),
+          gene_block(ambient_holder, static_cast<int>(first + start) + 1), double_span(offset),
+          double_span(rho), pace::Span<const double>(alpha.begin() + first + start, len),
+          double_span(sample_weight), nb2, seed_iteration, n, len,
+          pace::Span<double>(z_buffer.data() + start * n, n * len),
+          pace::Span<double>(w_buffer.data() + start * n, n * len),
+          pace::Span<double>(colsum_w.data() + start, len), n_threads, user_interrupted);
+      raise_if_failed(status, "working response");
+    }
+
+    // ---- the ridge must not be quantised away in single precision ----
+    // Below eps_float * sum(w) the ridge vanishes, at a threshold that falls as
+    // 1/n. Decided over the whole logical chunk, as the R it replaces did.
+    int chunk_precision = last_iter ? 0 : interior_precision;
+    if (chunk_precision != 0) {
+      double lam_min = R_PosInf;
+      double w_max = R_NegInf;
+      for (std::int64_t j = 0; j < m_chunk; ++j) {
+        for (std::int64_t k = 0; k < q_total; ++k) {
+          const double value = lam_diag(k, first + j);
+          if (value < lam_min) lam_min = value;
+        }
+        if (colsum_w[static_cast<std::size_t>(j)] > w_max) w_max = colsum_w[static_cast<std::size_t>(j)];
+      }
+      if (std::isfinite(lam_min) && std::isfinite(w_max) && lam_min < 1e-5 * w_max) {
+        chunk_precision = 0;
+      }
+    }
+
+    // ---- the per-gene solve ----
+    std::vector<double> lam_chunk(static_cast<std::size_t>(q_total * m_chunk));
+    for (std::int64_t j = 0; j < m_chunk; ++j) {
+      for (std::int64_t k = 0; k < q_total; ++k) {
+        lam_chunk[static_cast<std::size_t>(k + j * q_total)] = lam_diag(k, first + j);
+      }
+    }
+    const pace::Status solve_status = pace::solve_genes_chunk(
+        const_span(solve_x_fixed), n, p, design.blocks,
+        pace::Span<const double>(w_buffer.data(), n * m_chunk),
+        pace::Span<const double>(z_buffer.data(), n * m_chunk),
+        pace::Span<const double>(lam_chunk.data(), q_total * m_chunk), q_total, m_chunk,
+        chunk_precision != 0, n_threads, user_interrupted,
+        pace::Span<double>(chunk_beta.data(), p * m_chunk),
+        pace::Span<double>(chunk_u.data(), q_total * m_chunk),
+        pace::Span<double>(chunk_ainv.data(), (p + q_total) * m_chunk));
+    raise_if_failed(solve_status, "gene solve");
+
+    // ---- the lossless NaN guard: re-solve any bad gene in double ----
+    std::vector<std::int64_t> bad;
+    for (std::int64_t j = 0; j < m_chunk; ++j) {
+      bool finite = true;
+      for (std::int64_t k = 0; k < p && finite; ++k) {
+        if (!std::isfinite(chunk_beta[static_cast<std::size_t>(k + j * p)])) finite = false;
+      }
+      for (std::int64_t k = 0; k < q_total && finite; ++k) {
+        if (!std::isfinite(chunk_u[static_cast<std::size_t>(k + j * q_total)])) finite = false;
+      }
+      if (!finite) bad.push_back(j);
+    }
+    if (!bad.empty() && chunk_precision != 0) {
+      const std::int64_t n_bad = static_cast<std::int64_t>(bad.size());
+      std::vector<double> w_bad(static_cast<std::size_t>(n * n_bad));
+      std::vector<double> z_bad(static_cast<std::size_t>(n * n_bad));
+      std::vector<double> lam_bad(static_cast<std::size_t>(q_total * n_bad));
+      std::vector<double> beta_bad(static_cast<std::size_t>(p * n_bad));
+      std::vector<double> u_bad(static_cast<std::size_t>(q_total * n_bad));
+      std::vector<double> ainv_bad(static_cast<std::size_t>((p + q_total) * n_bad));
+      for (std::int64_t j = 0; j < n_bad; ++j) {
+        const std::int64_t source = bad[static_cast<std::size_t>(j)];
+        std::copy(w_buffer.begin() + source * n, w_buffer.begin() + (source + 1) * n,
+                  w_bad.begin() + j * n);
+        std::copy(z_buffer.begin() + source * n, z_buffer.begin() + (source + 1) * n,
+                  z_bad.begin() + j * n);
+        std::copy(lam_chunk.begin() + source * q_total, lam_chunk.begin() + (source + 1) * q_total,
+                  lam_bad.begin() + j * q_total);
+      }
+      const pace::Status redo = pace::solve_genes_chunk(
+          const_span(solve_x_fixed), n, p, design.blocks,
+          pace::Span<const double>(w_bad.data(), n * n_bad),
+          pace::Span<const double>(z_bad.data(), n * n_bad),
+          pace::Span<const double>(lam_bad.data(), q_total * n_bad), q_total, n_bad, false,
+          n_threads, user_interrupted, pace::Span<double>(beta_bad.data(), p * n_bad),
+          pace::Span<double>(u_bad.data(), q_total * n_bad),
+          pace::Span<double>(ainv_bad.data(), (p + q_total) * n_bad));
+      raise_if_failed(redo, "gene solve (double repair)");
+      for (std::int64_t j = 0; j < n_bad; ++j) {
+        const std::int64_t target = bad[static_cast<std::size_t>(j)];
+        std::copy(beta_bad.begin() + j * p, beta_bad.begin() + (j + 1) * p,
+                  chunk_beta.begin() + target * p);
+        std::copy(u_bad.begin() + j * q_total, u_bad.begin() + (j + 1) * q_total,
+                  chunk_u.begin() + target * q_total);
+        std::copy(ainv_bad.begin() + j * (p + q_total), ainv_bad.begin() + (j + 1) * (p + q_total),
+                  chunk_ainv.begin() + target * (p + q_total));
+      }
+    }
+
+    // ---- write the chunk's columns out ----
+    for (std::int64_t j = 0; j < m_chunk; ++j) {
+      const std::int64_t gene = first + j;
+      bool finite = true;
+      for (std::int64_t k = 0; k < p; ++k) {
+        const double value = chunk_beta[static_cast<std::size_t>(k + j * p)];
+        beta_out(k, gene) = value;
+        if (!std::isfinite(value)) finite = false;
+        if (last_iter) {
+          const double variance = chunk_ainv[static_cast<std::size_t>(k + j * (p + q_total))];
+          se_beta(k, gene) = std::sqrt(variance > 0 ? variance : 0.0);
+        }
+      }
+      for (std::int64_t k = 0; k < q_total; ++k) {
+        const double value = chunk_u[static_cast<std::size_t>(k + j * q_total)];
+        u_out(k, gene) = value;
+        if (!std::isfinite(value)) finite = false;
+        const double variance = chunk_ainv[static_cast<std::size_t>(p + k + j * (p + q_total))];
+        re_var(k, gene) = variance > 0 ? variance : 0.0;
+        if (last_iter) se_u(k, gene) = std::sqrt(variance > 0 ? variance : 0.0);
+      }
+      if (!finite) nan_genes.push_back(static_cast<int>(gene + 1));
+    }
+  }
+
+  return Rcpp::List::create(Rcpp::Named("B") = beta_out, Rcpp::Named("U") = u_out,
+                            Rcpp::Named("re_var") = re_var, Rcpp::Named("se_B") = se_beta,
+                            Rcpp::Named("se_U") = se_u,
+                            Rcpp::Named("nan_genes") = Rcpp::wrap(nan_genes));
+}
+
 // [[Rcpp::export]]
 Rcpp::List pace_working_response_chunk_cpp(
     const Rcpp::NumericMatrix& eta_chunk, const Rcpp::NumericVector& x1, bool x1_is_unit,

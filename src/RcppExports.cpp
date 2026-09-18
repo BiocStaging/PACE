@@ -697,6 +697,43 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_fit_pass1_cpp
+Rcpp::List pace_fit_pass1_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, const Rcpp::NumericMatrix& solve_x_fixed, int p, const Rcpp::S4& z_design, const Rcpp::List& blocks, const Rcpp::List& terms_list, const Rcpp::List& cells_by_group_list, const Rcpp::List& cell_group_list, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in, const Rcpp::NumericMatrix& lam_diag, const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2, bool seed_iteration, int n_cells, int chunk_size, int sub_genes, int interior_precision, bool last_iter, int n_threads);
+RcppExport SEXP _PACE_pace_fit_pass1_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP solve_x_fixedSEXP, SEXP pSEXP, SEXP z_designSEXP, SEXP blocksSEXP, SEXP terms_listSEXP, SEXP cells_by_group_listSEXP, SEXP cell_group_listSEXP, SEXP b_inSEXP, SEXP u_inSEXP, SEXP lam_diagSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP sample_weightSEXP, SEXP nb2SEXP, SEXP seed_iterationSEXP, SEXP n_cellsSEXP, SEXP chunk_sizeSEXP, SEXP sub_genesSEXP, SEXP interior_precisionSEXP, SEXP last_iterSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type x1(x1SEXP);
+    Rcpp::traits::input_parameter< bool >::type x1_is_unit(x1_is_unitSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type x_fixed(x_fixedSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type solve_x_fixed(solve_x_fixedSEXP);
+    Rcpp::traits::input_parameter< int >::type p(pSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type z_design(z_designSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type blocks(blocksSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type terms_list(terms_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type cells_by_group_list(cells_by_group_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type cell_group_list(cell_group_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type b_in(b_inSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type u_in(u_inSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type lam_diag(lam_diagSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type ambient(ambientSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type alpha(alphaSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type sample_weight(sample_weightSEXP);
+    Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
+    Rcpp::traits::input_parameter< bool >::type seed_iteration(seed_iterationSEXP);
+    Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
+    Rcpp::traits::input_parameter< int >::type chunk_size(chunk_sizeSEXP);
+    Rcpp::traits::input_parameter< int >::type sub_genes(sub_genesSEXP);
+    Rcpp::traits::input_parameter< int >::type interior_precision(interior_precisionSEXP);
+    Rcpp::traits::input_parameter< bool >::type last_iter(last_iterSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_fit_pass1_cpp(x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, b_in, u_in, lam_diag, counts, ambient, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, chunk_size, sub_genes, interior_precision, last_iter, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // pace_working_response_chunk_cpp
 Rcpp::List pace_working_response_chunk_cpp(const Rcpp::NumericMatrix& eta_chunk, const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::NumericMatrix& b, const Rcpp::S4& z_design, const Rcpp::NumericMatrix& u, const Rcpp::IntegerVector& genes, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2, bool seed_iteration, int n_cells, int sub_genes, int n_threads);
 RcppExport SEXP _PACE_pace_working_response_chunk_cpp(SEXP eta_chunkSEXP, SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP pSEXP, SEXP bSEXP, SEXP z_designSEXP, SEXP uSEXP, SEXP genesSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP sample_weightSEXP, SEXP nb2SEXP, SEXP seed_iterationSEXP, SEXP n_cellsSEXP, SEXP sub_genesSEXP, SEXP n_threadsSEXP) {
@@ -773,6 +810,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_anchor_mask_cpp", (DL_FUNC) &_PACE_pace_anchor_mask_cpp, 3},
     {"_PACE_pace_normalise_rows_to_max_cpp", (DL_FUNC) &_PACE_pace_normalise_rows_to_max_cpp, 1},
     {"_PACE_pace_eta_block_cpp", (DL_FUNC) &_PACE_pace_eta_block_cpp, 9},
+    {"_PACE_pace_fit_pass1_cpp", (DL_FUNC) &_PACE_pace_fit_pass1_cpp, 27},
     {"_PACE_pace_working_response_chunk_cpp", (DL_FUNC) &_PACE_pace_working_response_chunk_cpp, 21},
     {NULL, NULL, 0}
 };
