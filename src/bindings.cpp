@@ -861,6 +861,58 @@ Rcpp::NumericMatrix pace_data_informed_weights_cpp(const Rcpp::NumericMatrix& de
 // `blocks` carries col_offset / K_terms / K_groups; `cells_by_grp_list` and
 // `cell_grp_list` are 1-based, as R built them.
 // [[Rcpp::export]]
+// The random-effect design, converted out of R once. The per-chunk solve
+// binding used to rebuild this on EVERY call, and `group_cells` alone is one int
+// per cell per block -- 9.8 MB at 1.2M cells, rebuilt 39 chunks x 13 iterations.
+// Holding the R objects here keeps the spans the core sees alive for as long as
+// the design does.
+struct SolveDesign {
+  std::vector<Rcpp::NumericMatrix> terms;
+  std::vector<Rcpp::IntegerVector> cell_group;
+  std::vector<std::vector<int>> group_offsets;
+  std::vector<std::vector<int>> group_cells;
+  std::vector<pace::SolveBlock> blocks;
+};
+
+SolveDesign build_solve_design(const Rcpp::List& blocks, const Rcpp::List& terms_list,
+                               const Rcpp::List& cells_by_group_list,
+                               const Rcpp::List& cell_group_list) {
+  const int n_blocks = blocks.size();
+  SolveDesign design;
+  design.terms.resize(n_blocks);
+  design.cell_group.resize(n_blocks);
+  design.group_offsets.resize(n_blocks);
+  design.group_cells.resize(n_blocks);
+  design.blocks.resize(n_blocks);
+  for (int b = 0; b < n_blocks; ++b) {
+    const Rcpp::List block = blocks[b];
+    design.blocks[b].col_offset = Rcpp::as<int>(block["col_offset"]);
+    design.blocks[b].n_terms = Rcpp::as<int>(block["K_terms"]);
+    design.blocks[b].n_groups = Rcpp::as<int>(block["K_groups"]);
+    design.terms[b] = Rcpp::as<Rcpp::NumericMatrix>(terms_list[b]);
+    design.cell_group[b] = Rcpp::as<Rcpp::IntegerVector>(cell_group_list[b]);
+    const Rcpp::List cells = cells_by_group_list[b];
+    design.group_offsets[b].reserve(design.blocks[b].n_groups + 1);
+    design.group_offsets[b].push_back(0);
+    for (int g = 0; g < design.blocks[b].n_groups; ++g) {
+      const Rcpp::IntegerVector rows = cells[g];
+      for (R_xlen_t i = 0; i < rows.size(); ++i) design.group_cells[b].push_back(rows[i] - 1);
+      design.group_offsets[b].push_back(static_cast<int>(design.group_cells[b].size()));
+    }
+  }
+  // The spans are set after every push_back is done, so no reallocation can
+  // leave one dangling.
+  for (int b = 0; b < n_blocks; ++b) {
+    design.blocks[b].terms = const_span(design.terms[b]);
+    design.blocks[b].cell_group = int_span(design.cell_group[b]);
+    design.blocks[b].group_offsets = pace::Span<const int>(
+        design.group_offsets[b].data(), static_cast<std::int64_t>(design.group_offsets[b].size()));
+    design.blocks[b].group_cells = pace::Span<const int>(
+        design.group_cells[b].data(), static_cast<std::int64_t>(design.group_cells[b].size()));
+  }
+  return design;
+}
+
 Rcpp::List pace_solve_genes_chunk_cpp(const Rcpp::NumericMatrix& x_fixed,
                                       const Rcpp::NumericMatrix& w, const Rcpp::NumericMatrix& z,
                                       const Rcpp::NumericMatrix& lam_diag, int q_total,
@@ -871,36 +923,9 @@ Rcpp::List pace_solve_genes_chunk_cpp(const Rcpp::NumericMatrix& x_fixed,
   const std::int64_t n = x_fixed.nrow();
   const std::int64_t p = x_fixed.ncol();
   const std::int64_t n_genes = w.ncol();
-  const int n_blocks = blocks.size();
-
-  // The block inputs are held here for the duration of the call; the core sees spans.
-  std::vector<Rcpp::NumericMatrix> terms(n_blocks);
-  std::vector<Rcpp::IntegerVector> cell_group(n_blocks);
-  std::vector<std::vector<int>> group_offsets(n_blocks);
-  std::vector<std::vector<int>> group_cells(n_blocks);
-  std::vector<pace::SolveBlock> core_blocks(n_blocks);
-  for (int b = 0; b < n_blocks; ++b) {
-    const Rcpp::List block = blocks[b];
-    core_blocks[b].col_offset = Rcpp::as<int>(block["col_offset"]);
-    core_blocks[b].n_terms = Rcpp::as<int>(block["K_terms"]);
-    core_blocks[b].n_groups = Rcpp::as<int>(block["K_groups"]);
-    terms[b] = Rcpp::as<Rcpp::NumericMatrix>(terms_list[b]);
-    cell_group[b] = Rcpp::as<Rcpp::IntegerVector>(cell_group_list[b]);
-    const Rcpp::List cells = cells_by_group_list[b];
-    group_offsets[b].reserve(core_blocks[b].n_groups + 1);
-    group_offsets[b].push_back(0);
-    for (int g = 0; g < core_blocks[b].n_groups; ++g) {
-      const Rcpp::IntegerVector rows = cells[g];
-      for (R_xlen_t i = 0; i < rows.size(); ++i) group_cells[b].push_back(rows[i] - 1);
-      group_offsets[b].push_back(static_cast<int>(group_cells[b].size()));
-    }
-    core_blocks[b].terms = const_span(terms[b]);
-    core_blocks[b].cell_group = int_span(cell_group[b]);
-    core_blocks[b].group_offsets =
-        pace::Span<const int>(group_offsets[b].data(), static_cast<std::int64_t>(group_offsets[b].size()));
-    core_blocks[b].group_cells =
-        pace::Span<const int>(group_cells[b].data(), static_cast<std::int64_t>(group_cells[b].size()));
-  }
+  const SolveDesign design =
+      build_solve_design(blocks, terms_list, cells_by_group_list, cell_group_list);
+  const std::vector<pace::SolveBlock>& core_blocks = design.blocks;
 
   Rcpp::NumericMatrix beta(p, n_genes);
   Rcpp::NumericMatrix u(q_total, n_genes);
