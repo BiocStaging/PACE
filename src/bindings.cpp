@@ -1097,6 +1097,150 @@ Rcpp::NumericMatrix pace_eta_block_cpp(const Rcpp::NumericVector& x1, bool x1_is
   return eta;
 }
 
+// The post-solve rho accumulation over every gene chunk, without returning to
+// R between them. Per chunk R built TWO n x chunk eta matrices -- the current
+// one and the previous iteration's -- handed them in, and took the running
+// accumulators back to pass into the next chunk. Here both are buffers reused
+// across chunks and the accumulators never leave.
+// [[Rcpp::export]]
+Rcpp::List pace_rho_pass_cpp(
+    const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p,
+    const Rcpp::S4& z_design, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in,
+    const Rcpp::NumericMatrix& prev_b, const Rcpp::NumericMatrix& prev_u, bool have_previous,
+    const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset,
+    const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha,
+    const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, bool nb2,
+    bool want_tail_counts, int n_cells, int chunk_size, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const std::int64_t n = n_cells;
+  const std::int64_t n_genes_total = u_in.ncol();
+
+  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
+  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
+  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
+  const Rcpp::NumericVector z_values = z_design.slot("x");
+  pace::CscView z_view;
+  z_view.column_pointer = int_span(z_column_pointer);
+  z_view.row_index = int_span(z_row_index);
+  z_view.values = double_span(z_values);
+  z_view.n_rows = z_dims[0];
+  z_view.n_cols = z_dims[1];
+
+  Rcpp::NumericVector num(n);
+  Rcpp::NumericVector den(n);
+  Rcpp::NumericVector tail_counts(want_tail_counts ? 4 : 0);
+  double rel_delta_max = 0;
+  double rel_delta_sum = 0;
+  std::int64_t n_finite = 0;
+  std::int64_t n_nonfinite = 0;
+
+  const std::int64_t width = std::min<std::int64_t>(chunk_size, n_genes_total);
+  std::vector<double> eta(static_cast<std::size_t>(n * width));
+  std::vector<double> prev_eta(have_previous ? static_cast<std::size_t>(n * width) : 0);
+  std::vector<int> chunk_genes(static_cast<std::size_t>(width));
+
+  for (std::int64_t first = 0; first < n_genes_total; first += width) {
+    const std::int64_t m_chunk = std::min(width, n_genes_total - first);
+    for (std::int64_t j = 0; j < m_chunk; ++j) {
+      chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
+    }
+    const pace::Span<const int> genes(chunk_genes.data(), m_chunk);
+    pace::Status status = pace::eta_block(
+        double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(b_in), z_view,
+        const_span(u_in), genes, n, n_genes_total,
+        pace::Span<double>(eta.data(), n * m_chunk), n_threads, user_interrupted);
+    raise_if_failed(status, "eta block");
+    if (have_previous) {
+      status = pace::eta_block(
+          double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(prev_b), z_view,
+          const_span(prev_u), genes, n, n_genes_total,
+          pace::Span<double>(prev_eta.data(), n * m_chunk), n_threads, user_interrupted);
+      raise_if_failed(status, "previous eta block");
+    }
+    status = pace::rho_accumulate(
+        pace::Span<const double>(eta.data(), n * m_chunk),
+        have_previous ? pace::Span<const double>(prev_eta.data(), n * m_chunk)
+                      : pace::Span<const double>(nullptr, 0),
+        gene_block(count_holder, static_cast<int>(first) + 1),
+        gene_block(ambient_holder, static_cast<int>(first) + 1), double_span(offset),
+        double_span(rho), pace::Span<const double>(alpha.begin() + first, m_chunk),
+        const_span(mask), int_span(mask_index), mask.nrow(), nb2, false, !have_previous, n,
+        m_chunk, out_span(num), out_span(den), &rel_delta_max, &rel_delta_sum, &n_finite,
+        &n_nonfinite, out_span(tail_counts), n_threads, user_interrupted);
+    raise_if_failed(status, "rho accumulation");
+  }
+  return Rcpp::List::create(
+      Rcpp::Named("num") = num, Rcpp::Named("den") = den,
+      Rcpp::Named("rel_delta_max") = rel_delta_max,
+      Rcpp::Named("rel_delta_sum") = rel_delta_sum,
+      Rcpp::Named("n_finite") = static_cast<double>(n_finite),
+      Rcpp::Named("n_nonfinite") = static_cast<double>(n_nonfinite),
+      Rcpp::Named("tail_counts") = tail_counts);
+}
+
+// The dispersion MLE over every gene chunk, without returning to R between
+// them. Per chunk R built eta as an n x chunk matrix, passed it in, took the
+// alphas back and dropped the matrix. Here eta is a buffer reused across
+// chunks and only the finished alphas cross back.
+// [[Rcpp::export]]
+Rcpp::List pace_dispersion_pass_cpp(
+    const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p,
+    const Rcpp::S4& z_design, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in,
+    const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset,
+    const Rcpp::NumericVector& rho, bool nb2, bool zero_collapse, double max_cells,
+    bool fast_density, int n_cells, int chunk_size, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const std::int64_t n = n_cells;
+  const std::int64_t n_genes_total = u_in.ncol();
+
+  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
+  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
+  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
+  const Rcpp::NumericVector z_values = z_design.slot("x");
+  pace::CscView z_view;
+  z_view.column_pointer = int_span(z_column_pointer);
+  z_view.row_index = int_span(z_row_index);
+  z_view.values = double_span(z_values);
+  z_view.n_rows = z_dims[0];
+  z_view.n_cols = z_dims[1];
+
+  Rcpp::NumericVector alpha(n_genes_total);
+  double n_noninteger_total = 0;
+  const std::int64_t width = std::min<std::int64_t>(chunk_size, n_genes_total);
+  std::vector<double> eta(static_cast<std::size_t>(n * width));
+  std::vector<int> chunk_genes(static_cast<std::size_t>(width));
+
+  for (std::int64_t first = 0; first < n_genes_total; first += width) {
+    const std::int64_t m_chunk = std::min(width, n_genes_total - first);
+    for (std::int64_t j = 0; j < m_chunk; ++j) {
+      chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
+    }
+    const pace::Status eta_status = pace::eta_block(
+        double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(b_in), z_view,
+        const_span(u_in), pace::Span<const int>(chunk_genes.data(), m_chunk), n, n_genes_total,
+        pace::Span<double>(eta.data(), n * m_chunk), n_threads, user_interrupted);
+    raise_if_failed(eta_status, "eta block");
+
+    std::int64_t n_noninteger = 0;
+    const pace::Status status = pace::dispersion_chunk(
+        pace::Span<const double>(eta.data(), n * m_chunk),
+        gene_block(count_holder, static_cast<int>(first) + 1),
+        gene_block(ambient_holder, static_cast<int>(first) + 1), double_span(offset),
+        double_span(rho), nb2, zero_collapse, max_cells, r_log_nbinom, fast_density, n, m_chunk,
+        pace::Span<double>(alpha.begin() + first, m_chunk), &n_noninteger, n_threads,
+        user_interrupted);
+    raise_if_failed(status, "dispersion");
+    n_noninteger_total += static_cast<double>(n_noninteger);
+  }
+  for (R_xlen_t j = 0; j < alpha.size(); ++j) {
+    if (ISNAN(alpha[j])) alpha[j] = NA_REAL;
+  }
+  return Rcpp::List::create(Rcpp::Named("alpha") = alpha,
+                            Rcpp::Named("n_noninteger") = n_noninteger_total);
+}
+
 // One logical chunk's working response and weights, built a sub-block at a time
 // inside the core.
 //

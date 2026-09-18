@@ -514,29 +514,28 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## max(|eta - prev_eta| / max(|prev_eta|, 1e-3)) over the same pass. A
     ## non-finite (cell, gene) contributes nothing to num/den, as rowSums with
     ## na.rm did, and is counted so a lossy fit cannot report convergence.
-    for (cs in chk_starts) {
-      gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-      eta_chk <- .eta_block(B, U, gene_idx_chk)
-      prev_eta_chk <- if (!prev_eta_set) empty_matrix else .eta_block(prev_B, prev_U, gene_idx_chk)
-      acc <- pace_rho_accumulate_cpp(
-        eta_chk, prev_eta_chk, Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
-        alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
-        seed_iteration = FALSE, seed_previous = !prev_eta_set, n_cells = n,
-        n_genes_in = length(gene_idx_chk), want_tail_counts = RD_DIAG, n_threads = .pace_thread_count(n_threads))
-      num <- acc$num
-      den <- acc$den
-      rel_delta <- max(rel_delta, acc$rel_delta_max)
-      rd_n   <- rd_n   + acc$n_finite
-      rd_sum <- rd_sum + acc$rel_delta_sum
-      rd_nonfinite <- rd_nonfinite + acc$n_nonfinite
-      if (RD_DIAG) {       ## tail-fraction counts: diagnostic only
-        rd_g01 <- rd_g01 + acc$tail_counts[1L]
-        rd_g05 <- rd_g05 + acc$tail_counts[2L]
-        rd_g1  <- rd_g1  + acc$tail_counts[3L]
-        rd_g10 <- rd_g10 + acc$tail_counts[4L]
-      }
-      rm(eta_chk, prev_eta_chk, acc)
+    ## The whole sweep runs in the core. Both eta matrices -- the current one and
+    ## the previous iteration's -- are buffers reused across chunks rather than a
+    ## pair of n x chunk R matrices built and dropped per chunk, and the running
+    ## accumulators stay there instead of crossing back on every chunk.
+    acc <- pace_rho_pass_cpp(
+      x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, Z, B, U,
+      if (prev_eta_set) prev_B else B, if (prev_eta_set) prev_U else U, prev_eta_set,
+      Y, a_cache, offset_vec, add_rho, alpha, mask_matrix, mask_index, disp_nb2,
+      RD_DIAG, n, as.integer(chunk_size), .pace_thread_count(n_threads))
+    num <- acc$num
+    den <- acc$den
+    rel_delta <- max(rel_delta, acc$rel_delta_max)
+    rd_n   <- rd_n   + acc$n_finite
+    rd_sum <- rd_sum + acc$rel_delta_sum
+    rd_nonfinite <- rd_nonfinite + acc$n_nonfinite
+    if (RD_DIAG) {         ## tail-fraction counts: diagnostic only
+      rd_g01 <- rd_g01 + acc$tail_counts[1L]
+      rd_g05 <- rd_g05 + acc$tail_counts[2L]
+      rd_g1  <- rd_g1  + acc$tail_counts[3L]
+      rd_g10 <- rd_g10 + acc$tail_counts[4L]
     }
+    rm(acc)
     } else {
       ## Fused path: num/den already accumulated in Pass 1. COEFFICIENT-based
       ## convergence metric -- the eta-based one is unusable here because the
@@ -598,24 +597,20 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## alpha_warmup = Inf disables the freeze (always update = exact).
     update_alpha <- (it <= alpha_warmup) || last_iter
     if (update_alpha) {
-    alpha_new <- numeric(g_n)
-    for (cs in chk_starts) {
-      gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-      eta_chk <- .eta_block(B, U, gene_idx_chk)
-      ## pace::dispersion_chunk: each gene's fitted mean is rebuilt from its own
-      ## column and its dispersion minimised over log alpha, on the core's
-      ## threads. No process forking, and the per-gene work never leaves C++.
-      fitted <- pace_dispersion_chunk_cpp(eta_chk, Y, a_cache, gene_idx_chk[1L], offset_vec,
-                                          add_rho, disp_nb2, alpha_zero_collapse, alpha_max_n,
-                                          alpha_fast_density,
-                                          .pace_thread_count(n_threads))
-      if (fitted$n_noninteger > 0)
-        warning(sprintf("iter %d: %.0f gene(s) have counts that are not whole numbers; their ",
-                        it, fitted$n_noninteger),
-                "dispersion is undefined and keeps its previous value.", call. = FALSE)
-      alpha_new[gene_idx_chk] <- fitted$alpha
-      rm(eta_chk, fitted)
-    }
+    ## The whole sweep runs in the core: each gene's fitted mean is rebuilt from
+    ## its own column and its dispersion minimised over log alpha, on the core's
+    ## threads, and eta is a buffer reused across chunks rather than an n x chunk
+    ## R matrix built and dropped per chunk.
+    fitted <- pace_dispersion_pass_cpp(
+      x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, Z, B, U,
+      Y, a_cache, offset_vec, add_rho, disp_nb2, alpha_zero_collapse, alpha_max_n,
+      alpha_fast_density, n, as.integer(chunk_size), .pace_thread_count(n_threads))
+    if (fitted$n_noninteger > 0)
+      warning(sprintf("iter %d: %.0f gene(s) have counts that are not whole numbers; their ",
+                      it, fitted$n_noninteger),
+              "dispersion is undefined and keeps its previous value.", call. = FALSE)
+    alpha_new <- fitted$alpha
+    rm(fitted)
     alpha <- alpha_new
     alpha[!is.finite(alpha)] <- prev_alpha[!is.finite(alpha)]
     alpha <- pmin(pmax(alpha, 1e-4), 50)
