@@ -935,7 +935,8 @@ Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp:
                                      const Rcpp::S4& ambient, int first_gene,
                                      const Rcpp::NumericVector& offset,
                                      const Rcpp::NumericVector& rho, bool nb2,
-                                     bool zero_collapse, double max_cells, int n_threads) {
+                                     bool zero_collapse, double max_cells, bool fast_density,
+                                     int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
   const std::int64_t n = eta.nrow();
@@ -944,8 +945,8 @@ Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp:
   std::int64_t n_noninteger = 0;
   const pace::Status status = pace::dispersion_chunk(
       const_span(eta), gene_block(count_holder, first_gene), gene_block(ambient_holder, first_gene),
-      double_span(offset), double_span(rho), nb2, zero_collapse, max_cells, r_log_nbinom, n,
-      n_genes, out_span(alpha), &n_noninteger, n_threads, user_interrupted);
+      double_span(offset), double_span(rho), nb2, zero_collapse, max_cells, r_log_nbinom,
+      fast_density, n, n_genes, out_span(alpha), &n_noninteger, n_threads, user_interrupted);
   raise_if_failed(status, "dispersion");
   for (R_xlen_t j = 0; j < alpha.size(); ++j) {
     if (ISNAN(alpha[j])) alpha[j] = NA_REAL;
@@ -957,9 +958,10 @@ Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp:
 // The same MLE for one gene, from its counts and fitted means.
 // [[Rcpp::export]]
 double pace_dispersion_mle_cpp(const Rcpp::NumericVector& counts, const Rcpp::NumericVector& mu,
-                               bool nb2, bool zero_collapse, double max_cells) {
+                               bool nb2, bool zero_collapse, double max_cells,
+                               bool fast_density) {
   const double alpha = pace::dispersion_mle(double_span(counts), double_span(mu), nb2,
-                                            zero_collapse, max_cells, r_log_nbinom);
+                                            zero_collapse, max_cells, r_log_nbinom, fast_density);
   return ISNAN(alpha) ? NA_REAL : alpha;
 }
 

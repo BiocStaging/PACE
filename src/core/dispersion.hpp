@@ -43,8 +43,13 @@ double brent_root(double lower, double upper, double tolerance, int max_iteratio
 //   alpha = argmin_a -sum_i log f(y_i; size, mu_i),  size = mu_i / a (NB1) or 1 / a (NB2),
 // minimised over log a in [-6, 4]. Fewer than ten cells gives NaN. See
 // dispersion_chunk() for `zero_collapse` and `max_cells`.
+// `fast_density` swaps the supplied per-cell density for a closed-form NB1
+// objective (see the .cpp). It is an OFFSET negative log-likelihood -- the
+// alpha-free lgamma(x+1) term is dropped -- so it may be minimised but never
+// compared against a likelihood. Ignored when nb2 is true.
 double dispersion_mle(Span<const double> counts, Span<const double> mu, bool nb2,
-                      bool zero_collapse, double max_cells, LogDensity density);
+                      bool zero_collapse, double max_cells, LogDensity density,
+                      bool fast_density);
 
 // The dispersion MLE of every gene in one chunk.
 //
@@ -75,7 +80,8 @@ double dispersion_mle(Span<const double> counts, Span<const double> mu, bool nb2
 // time from their sparse blocks.
 Status dispersion_chunk(Span<const double> eta, const GeneBlock& counts, const GeneBlock& ambient,
                         Span<const double> offset, Span<const double> rho, bool nb2,
-                        bool zero_collapse, double max_cells, LogDensity density, std::int64_t n,
+                        bool zero_collapse, double max_cells, LogDensity density,
+                        bool fast_density, std::int64_t n,
                         std::int64_t n_genes, Span<double> alpha, std::int64_t* n_noninteger,
                         int n_threads, const InterruptCheck& interrupted);
 

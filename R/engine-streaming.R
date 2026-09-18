@@ -89,6 +89,13 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      ##   melanoma 46 calls, none gained or lost, no sign flips,
                                      ##   SPP1 unchanged; fits 1.20x and 1.12x faster.
                                      alpha_zero_collapse = TRUE,
+                                     ## alpha_fast_density: minimise a closed-form NB1
+                                     ## objective instead of calling Rf_dnbinom_mu once
+                                     ## per cell per Brent step. 5x on the dispersion
+                                     ## MLE, 1.43x on a full BC fit. Agrees with the
+                                     ## density it replaces to ~5e-8 on alpha; the calls
+                                     ## do not move on either cohort.
+                                     alpha_fast_density = TRUE,
                                      ## early_stop_tol / min_iter: break the IRLS loop once the streamed
                                      ##   MEAN rel_delta (mean over cell-genes of |Delta eta|/max(|eta|,1e-3))
                                      ##   falls below early_stop_tol, but never before min_iter iterations.
@@ -571,6 +578,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       ## threads. No process forking, and the per-gene work never leaves C++.
       fitted <- pace_dispersion_chunk_cpp(eta_chk, Y, a_cache, gene_idx_chk[1L], offset_vec,
                                           add_rho, disp_nb2, alpha_zero_collapse, alpha_max_n,
+                                          alpha_fast_density,
                                           .pace_thread_count(n_threads))
       if (fitted$n_noninteger > 0)
         warning(sprintf("iter %d: %.0f gene(s) have counts that are not whole numbers; their ",

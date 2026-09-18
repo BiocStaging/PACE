@@ -137,12 +137,12 @@ pace_solve_genes_chunk_cpp <- function(x_fixed, w, z, lam_diag, q_total, blocks,
     .Call(`_PACE_pace_solve_genes_chunk_cpp`, x_fixed, w, z, lam_diag, q_total, blocks, terms_list, cells_by_group_list, cell_group_list, single_precision, n_threads)
 }
 
-pace_dispersion_chunk_cpp <- function(eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, n_threads) {
-    .Call(`_PACE_pace_dispersion_chunk_cpp`, eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, n_threads)
+pace_dispersion_chunk_cpp <- function(eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_threads) {
+    .Call(`_PACE_pace_dispersion_chunk_cpp`, eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_threads)
 }
 
-pace_dispersion_mle_cpp <- function(counts, mu, nb2, zero_collapse, max_cells) {
-    .Call(`_PACE_pace_dispersion_mle_cpp`, counts, mu, nb2, zero_collapse, max_cells)
+pace_dispersion_mle_cpp <- function(counts, mu, nb2, zero_collapse, max_cells, fast_density) {
+    .Call(`_PACE_pace_dispersion_mle_cpp`, counts, mu, nb2, zero_collapse, max_cells, fast_density)
 }
 
 pace_estimate_d0_cpp <- function(log_variance, n_used, d0_max) {

@@ -565,8 +565,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // pace_dispersion_chunk_cpp
-Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, bool nb2, bool zero_collapse, double max_cells, int n_threads);
-RcppExport SEXP _PACE_pace_dispersion_chunk_cpp(SEXP etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP, SEXP n_threadsSEXP) {
+Rcpp::List pace_dispersion_chunk_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, bool nb2, bool zero_collapse, double max_cells, bool fast_density, int n_threads);
+RcppExport SEXP _PACE_pace_dispersion_chunk_cpp(SEXP etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP, SEXP fast_densitySEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -579,14 +579,15 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
     Rcpp::traits::input_parameter< bool >::type zero_collapse(zero_collapseSEXP);
     Rcpp::traits::input_parameter< double >::type max_cells(max_cellsSEXP);
+    Rcpp::traits::input_parameter< bool >::type fast_density(fast_densitySEXP);
     Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_dispersion_chunk_cpp(eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, n_threads));
+    rcpp_result_gen = Rcpp::wrap(pace_dispersion_chunk_cpp(eta, counts, ambient, first_gene, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_threads));
     return rcpp_result_gen;
 END_RCPP
 }
 // pace_dispersion_mle_cpp
-double pace_dispersion_mle_cpp(const Rcpp::NumericVector& counts, const Rcpp::NumericVector& mu, bool nb2, bool zero_collapse, double max_cells);
-RcppExport SEXP _PACE_pace_dispersion_mle_cpp(SEXP countsSEXP, SEXP muSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP) {
+double pace_dispersion_mle_cpp(const Rcpp::NumericVector& counts, const Rcpp::NumericVector& mu, bool nb2, bool zero_collapse, double max_cells, bool fast_density);
+RcppExport SEXP _PACE_pace_dispersion_mle_cpp(SEXP countsSEXP, SEXP muSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP, SEXP fast_densitySEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -595,7 +596,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
     Rcpp::traits::input_parameter< bool >::type zero_collapse(zero_collapseSEXP);
     Rcpp::traits::input_parameter< double >::type max_cells(max_cellsSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_dispersion_mle_cpp(counts, mu, nb2, zero_collapse, max_cells));
+    Rcpp::traits::input_parameter< bool >::type fast_density(fast_densitySEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_dispersion_mle_cpp(counts, mu, nb2, zero_collapse, max_cells, fast_density));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -761,8 +763,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_tau_clamp_cpp", (DL_FUNC) &_PACE_pace_tau_clamp_cpp, 2},
     {"_PACE_pace_data_informed_weights_cpp", (DL_FUNC) &_PACE_pace_data_informed_weights_cpp, 3},
     {"_PACE_pace_solve_genes_chunk_cpp", (DL_FUNC) &_PACE_pace_solve_genes_chunk_cpp, 11},
-    {"_PACE_pace_dispersion_chunk_cpp", (DL_FUNC) &_PACE_pace_dispersion_chunk_cpp, 10},
-    {"_PACE_pace_dispersion_mle_cpp", (DL_FUNC) &_PACE_pace_dispersion_mle_cpp, 5},
+    {"_PACE_pace_dispersion_chunk_cpp", (DL_FUNC) &_PACE_pace_dispersion_chunk_cpp, 11},
+    {"_PACE_pace_dispersion_mle_cpp", (DL_FUNC) &_PACE_pace_dispersion_mle_cpp, 6},
     {"_PACE_pace_estimate_d0_cpp", (DL_FUNC) &_PACE_pace_estimate_d0_cpp, 3},
     {"_PACE_pace_drop_sparse_kernel_cpp", (DL_FUNC) &_PACE_pace_drop_sparse_kernel_cpp, 3},
     {"_PACE_pace_centre_within_groups_cpp", (DL_FUNC) &_PACE_pace_centre_within_groups_cpp, 5},

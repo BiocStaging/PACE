@@ -208,8 +208,64 @@ double brent_root(double lower, double upper, double tolerance, int max_iteratio
 }
 
 
+// The NB1 negative log-likelihood written out, instead of calling a density per
+// cell. `Rf_dnbinom_mu` cannot do any of this because it does not know that
+// `size` is tied to `mu`; once size = mu/a the sum collapses a long way.
+//
+//   log f(x; mu/a, mu) = lgamma(x + mu/a) - lgamma(mu/a) - lgamma(x + 1)
+//                        - (mu/a) log1p(a) + x (log a - log1p(a))
+//
+// so summed over cells, with S_mu = sum mu_i and S_x = sum x_i:
+//   - the two per-cell logs become the SCALARS log a and log1p(a)
+//   - lgamma(x + 1) does not involve a and cannot move the argmin, so it is
+//     dropped; this makes the value returned an offset version of the true
+//     negative log-likelihood, which is why nothing else may read it
+//   - x == 0 gives lgamma(mu/a) - lgamma(mu/a) = 0, the zero_collapse identity
+//     the caller already applies
+//
+// What is left per non-zero cell is lgamma(x + s) - lgamma(s) with s = mu/a.
+// For small integer x that is exactly sum_{k<x} log(s + k), which is both
+// cheaper than two lgamma calls and better conditioned, since it never forms
+// the difference of two large values. Counts on these panels are mostly 0-3.
+double nb1_negative_loglik_fast(const double* y, const double* mean, std::int64_t used,
+                                double log_alpha) {
+  const double a = std::exp(log_alpha);
+  const double log1p_a = std::log1p(a);
+  const double log_a = log_alpha;          // log(exp(log_alpha)) without the round trip
+  const std::int64_t small_count_limit = 8;
+  long double total = 0.0L;
+  long double count_sum = 0.0L;
+  long double mean_sum = 0.0L;
+  for (std::int64_t i = 0; i < used; ++i) {
+    const double count = y[static_cast<std::size_t>(i)];
+    const double value = mean[static_cast<std::size_t>(i)];
+    mean_sum += value;
+    if (count == 0) continue;              // its two lgamma terms cancel exactly
+    count_sum += count;
+    const double size = value / a;
+    const std::int64_t whole = static_cast<std::int64_t>(count);
+    if (static_cast<double>(whole) == count && whole <= small_count_limit) {
+      double ratio = 0.0;
+      for (std::int64_t k = 0; k < whole; ++k) ratio += std::log(size + static_cast<double>(k));
+      total += ratio;
+    } else {
+      total += std::lgamma(count + size) - std::lgamma(size);
+    }
+  }
+  // The parts that depend on the cells only through their sums. Zero counts
+  // need no special case here: their whole contribution IS -(mu/a) log1p(a),
+  // which `mean_sum` already carries, so the caller's zero_collapse identity is
+  // subsumed rather than applied on top.
+  const double sum_mean = static_cast<double>(mean_sum);
+  const double sum_count = static_cast<double>(count_sum);
+  const double result = static_cast<double>(total) + sum_count * (log_a - log1p_a)
+                        - sum_mean * log1p_a / a;
+  return -result;
+}
+
 double dispersion_mle(Span<const double> counts, Span<const double> mu, bool nb2,
-                      bool zero_collapse, double max_cells, LogDensity density) {
+                      bool zero_collapse, double max_cells, LogDensity density,
+                      bool fast_density) {
   std::int64_t used = counts.size;
   if (used != mu.size) return kQuietNaN;
   if (used < 10) return kQuietNaN;
@@ -248,6 +304,9 @@ double dispersion_mle(Span<const double> counts, Span<const double> mu, bool nb2
   const bool collapse = zero_collapse && !nb2 && n_zero > 0;
 
   auto negative_log_likelihood = [&](double log_alpha) {
+    if (fast_density && !nb2) {
+      return nb1_negative_loglik_fast(y.data(), mean.data(), used, log_alpha);
+    }
     const double a = std::exp(log_alpha);
     long double total = 0.0L;
     for (std::int64_t i = 0; i < used; ++i) {
@@ -267,7 +326,8 @@ double dispersion_mle(Span<const double> counts, Span<const double> mu, bool nb2
 
 Status dispersion_chunk(Span<const double> eta, const GeneBlock& counts, const GeneBlock& ambient,
                         Span<const double> offset, Span<const double> rho, bool nb2,
-                        bool zero_collapse, double max_cells, LogDensity density, std::int64_t n,
+                        bool zero_collapse, double max_cells, LogDensity density,
+                        bool fast_density, std::int64_t n,
                         std::int64_t n_genes, Span<double> alpha, std::int64_t* n_noninteger,
                         int n_threads, const InterruptCheck& interrupted) {
   if (eta.size != n * n_genes || offset.size != n || rho.size != n || alpha.size != n_genes) {
@@ -308,7 +368,7 @@ Status dispersion_chunk(Span<const double> eta, const GeneBlock& counts, const G
       }
       alpha[j] = dispersion_mle(Span<const double>(y.data(), static_cast<std::int64_t>(y.size())),
                                 Span<const double>(mu.data(), static_cast<std::int64_t>(mu.size())),
-                                nb2, zero_collapse, max_cells, density);
+                                nb2, zero_collapse, max_cells, density, fast_density);
     }
   };
   const Status status = parallel_for(n_genes, n_threads, 1, body, interrupted);

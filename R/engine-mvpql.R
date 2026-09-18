@@ -474,14 +474,17 @@ build_random_design_multi <- function(df, re_specs) {
 #
 # `zero_collapse` sums the zero-count cells in closed form (exact algebra,
 # reassociated, so alpha moves in its last digits); see the design note.
-.alpha_nb1_mle <- function(y, mu, max_n = Inf, zero_collapse = FALSE) {
+.alpha_nb1_mle <- function(y, mu, max_n = Inf, zero_collapse = FALSE,
+                           fast_density = FALSE) {
   pace_dispersion_mle_cpp(as.numeric(y), as.numeric(mu), nb2 = FALSE,
-                          zero_collapse = zero_collapse, max_cells = max_n)
+                          zero_collapse = zero_collapse, max_cells = max_n,
+                          fast_density = fast_density)
 }
 
 .alpha_nb2_mle <- function(y, mu, max_n = Inf) {
   pace_dispersion_mle_cpp(as.numeric(y), as.numeric(mu), nb2 = TRUE,
-                          zero_collapse = FALSE, max_cells = max_n)
+                          zero_collapse = FALSE, max_cells = max_n,
+                          fast_density = FALSE)
 }
 
 
