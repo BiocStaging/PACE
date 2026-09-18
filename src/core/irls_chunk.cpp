@@ -71,9 +71,14 @@ Status working_response(Span<const double> eta, const GeneBlock& counts, const G
     }
   }
 
+  // The scratch is thread_local, not per call. With one gene per block (below)
+  // `body` runs once per gene, and a fresh pair of n-length vectors per gene
+  // would be 19.6 MB of malloc and first-touch faults each at 1.2M cells. Held
+  // per worker instead, expand_column's assign() reuses the capacity and the
+  // allocation happens once per thread for the life of the pool.
   auto body = [&](std::int64_t begin, std::int64_t end) {
-    std::vector<double> y_column;
-    std::vector<double> ambient_column;
+    static thread_local std::vector<double> y_column;
+    static thread_local std::vector<double> ambient_column;
     for (std::int64_t j = begin; j < end; ++j) {
       expand_column(counts, j, n, y_column);
       if (!seed_iteration) expand_column(ambient, j, n, ambient_column);
@@ -107,7 +112,15 @@ Status working_response(Span<const double> eta, const GeneBlock& counts, const G
       colsum_w[j] = static_cast<double>(weight_sum);
     }
   };
-  return parallel_for(n_genes, n_threads, 4, body, interrupted);
+  // One gene per block, not four. Four blocks meant worker_cap = min(threads, 4)
+  // in thread_pool, so this pass used at most FOUR threads however many were
+  // asked for -- the caller hands it sub-blocks of 16 genes (bindings.cpp), so
+  // four genes a block left twelve of those sixteen unable to find a worker.
+  // Per gene, the ceiling becomes the sub-block width instead, and the
+  // partition still does not depend on the worker count, so neither do results:
+  // gene j writes only z[, j], w[, j] and colsum_w[j], and the long double
+  // weight_sum never crosses a gene boundary.
+  return parallel_for(n_genes, n_threads, 1, body, interrupted);
 }
 
 Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const GeneBlock& counts,
