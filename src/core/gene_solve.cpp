@@ -248,12 +248,33 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
   // environment variable rather than on the `threads` argument is not something
   // to ship, least of all to a builder that may or may not have OpenMP.
   //
-  // Pinning is free: the serial run measured 35.3 s against 36.7 s.
-  std::vector<CrossBlock<T>> cross;
+  // Pinning cost Eigen's own parallelism here, which used to be this stage's
+  // only parallelism -- and the cost grew with the chunk: melanoma at
+  // chunk_size 512 went from 41.9 s to 103.5 s. So the work is handed to the
+  // core's own pool instead, which is both faster and reproducible.
+  //
+  // The (group, group) pairs are enumerated first, serially, then computed in
+  // parallel with each pair writing only its own entry. Enumerating first is
+  // what makes the order well defined: the buckets come out of an unordered_map
+  // whose iteration order is not specified, so they are sorted by the second
+  // block's group before anything is computed. Stage 3 only ever ASSIGNS from
+  // these entries -- never accumulates -- so the order cannot reach the
+  // arithmetic anyway, but a fit should not depend on a hash map's internals.
+  //
+  // Peak memory rises: each worker holds its own n_shared x n_genes weight
+  // slice, so the stage now costs up to n_threads of those rather than one.
+  // A bucket is the cells one cell type has in one image, so the slices are far
+  // smaller than a chunk of w.
+  struct CrossWork {
+    int block_1 = 0;
+    int block_2 = 0;
+    int group_1 = 0;
+    int group_2 = 0;
+    std::vector<int> cells;
+  };
+  std::vector<CrossWork> work;
   for (int b1 = 0; b1 + 1 < n_blocks; ++b1) {
-    const int n_terms_1 = blocks[b1].n_terms;
     for (int b2 = b1 + 1; b2 < n_blocks; ++b2) {
-      const int n_terms_2 = blocks[b2].n_terms;
       for (int g1 = 0; g1 < blocks[b1].n_groups; ++g1) {
         const int first = blocks[b1].group_offsets[g1];
         const int last = blocks[b1].group_offsets[g1 + 1];
@@ -263,39 +284,63 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
           const int cell = blocks[b1].group_cells[k];
           buckets[blocks[b2].cell_group[cell] - 1].push_back(cell);
         }
-        for (const auto& bucket : buckets) {
-          const std::vector<int>& cells = bucket.second;
-          const int n_shared = static_cast<int>(cells.size());
-          if (n_shared == 0) continue;
-          Matrix terms_1(n_shared, n_terms_1);
-          Matrix terms_2(n_shared, n_terms_2);
-          Matrix w_shared(n_shared, n_genes);
-          for (int i = 0; i < n_shared; ++i) {
-            terms_1.row(i) = terms[b1].row(cells[i]);
-            terms_2.row(i) = terms[b2].row(cells[i]);
-            w_shared.row(i) = w.row(cells[i]);
-          }
-          Matrix products(n_shared, n_terms_1 * n_terms_2);
-          for (int t2 = 0; t2 < n_terms_2; ++t2) {
-            for (int t1 = 0; t1 < n_terms_1; ++t1) {
-              products.col(t2 * n_terms_1 + t1) = terms_1.col(t1).cwiseProduct(terms_2.col(t2));
-            }
-          }
-          CrossBlock<T> entry;
-          entry.n_terms_1 = n_terms_1;
-          entry.n_terms_2 = n_terms_2;
-          entry.n_groups_1 = blocks[b1].n_groups;
-          entry.n_groups_2 = blocks[b2].n_groups;
-          entry.group_1 = g1;
-          entry.group_2 = bucket.first;
-          entry.col_offset_1 = blocks[b1].col_offset;
-          entry.col_offset_2 = blocks[b2].col_offset;
-          entry.tensor.noalias() = products.transpose() * w_shared;
-          cross.push_back(std::move(entry));
+        std::vector<int> groups_2;
+        groups_2.reserve(buckets.size());
+        for (const auto& bucket : buckets) groups_2.push_back(bucket.first);
+        std::sort(groups_2.begin(), groups_2.end());
+        for (const int g2 : groups_2) {
+          if (buckets[g2].empty()) continue;
+          CrossWork item;
+          item.block_1 = b1;
+          item.block_2 = b2;
+          item.group_1 = g1;
+          item.group_2 = g2;
+          item.cells = std::move(buckets[g2]);
+          work.push_back(std::move(item));
         }
       }
     }
   }
+
+  std::vector<CrossBlock<T>> cross(work.size());
+  auto cross_body = [&](std::int64_t begin, std::int64_t end) {
+    for (std::int64_t i = begin; i < end; ++i) {
+      const CrossWork& item = work[static_cast<std::size_t>(i)];
+      const int b1 = item.block_1;
+      const int b2 = item.block_2;
+      const int n_terms_1 = blocks[b1].n_terms;
+      const int n_terms_2 = blocks[b2].n_terms;
+      const std::vector<int>& cells = item.cells;
+      const int n_shared = static_cast<int>(cells.size());
+      Matrix terms_1(n_shared, n_terms_1);
+      Matrix terms_2(n_shared, n_terms_2);
+      Matrix w_shared(n_shared, n_genes);
+      for (int k = 0; k < n_shared; ++k) {
+        terms_1.row(k) = terms[b1].row(cells[k]);
+        terms_2.row(k) = terms[b2].row(cells[k]);
+        w_shared.row(k) = w.row(cells[k]);
+      }
+      Matrix products(n_shared, n_terms_1 * n_terms_2);
+      for (int t2 = 0; t2 < n_terms_2; ++t2) {
+        for (int t1 = 0; t1 < n_terms_1; ++t1) {
+          products.col(t2 * n_terms_1 + t1) = terms_1.col(t1).cwiseProduct(terms_2.col(t2));
+        }
+      }
+      CrossBlock<T>& entry = cross[static_cast<std::size_t>(i)];
+      entry.n_terms_1 = n_terms_1;
+      entry.n_terms_2 = n_terms_2;
+      entry.n_groups_1 = blocks[b1].n_groups;
+      entry.n_groups_2 = blocks[b2].n_groups;
+      entry.group_1 = item.group_1;
+      entry.group_2 = item.group_2;
+      entry.col_offset_1 = blocks[b1].col_offset;
+      entry.col_offset_2 = blocks[b2].col_offset;
+      entry.tensor.noalias() = products.transpose() * w_shared;
+    }
+  };
+  const Status cross_status = parallel_for(static_cast<std::int64_t>(work.size()),
+                                           n_threads, 1, cross_body, interrupted);
+  if (!cross_status.is_ok()) return cross_status;
 
   // ---- Stage 3: one solve per gene ----
   const T missing = std::numeric_limits<T>::quiet_NaN();
