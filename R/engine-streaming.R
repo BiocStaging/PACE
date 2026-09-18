@@ -358,7 +358,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
           if (it == 1L) empty_matrix else eta_chk, empty_matrix, Y, a_cache, gene_idx_chk[1L],
           offset_vec, add_rho, alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
           seed_iteration = (it == 1L), seed_previous = FALSE, n_cells = n, n_genes_in = m_chk,
-          want_tail_counts = FALSE)
+          want_tail_counts = FALSE, n_threads = .pace_thread_count(n_threads))
         num <- acc$num
         den <- acc$den
         rm(acc)
@@ -493,7 +493,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
         eta_chk, prev_eta_chk, Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
         alpha[gene_idx_chk], mask_matrix, mask_index, num, den, disp_nb2,
         seed_iteration = FALSE, seed_previous = !prev_eta_set, n_cells = n,
-        n_genes_in = length(gene_idx_chk), want_tail_counts = RD_DIAG)
+        n_genes_in = length(gene_idx_chk), want_tail_counts = RD_DIAG, n_threads = .pace_thread_count(n_threads))
       num <- acc$num
       den <- acc$den
       rel_delta <- max(rel_delta, acc$rel_delta_max)

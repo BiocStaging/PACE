@@ -394,8 +394,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // pace_rho_accumulate_cpp
-Rcpp::List pace_rho_accumulate_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::NumericMatrix& prev_eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, const Rcpp::NumericVector& num_in, const Rcpp::NumericVector& den_in, bool nb2, bool seed_iteration, bool seed_previous, int n_cells, int n_genes_in, bool want_tail_counts);
-RcppExport SEXP _PACE_pace_rho_accumulate_cpp(SEXP etaSEXP, SEXP prev_etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP maskSEXP, SEXP mask_indexSEXP, SEXP num_inSEXP, SEXP den_inSEXP, SEXP nb2SEXP, SEXP seed_iterationSEXP, SEXP seed_previousSEXP, SEXP n_cellsSEXP, SEXP n_genes_inSEXP, SEXP want_tail_countsSEXP) {
+Rcpp::List pace_rho_accumulate_cpp(const Rcpp::NumericMatrix& eta, const Rcpp::NumericMatrix& prev_eta, const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, const Rcpp::NumericVector& num_in, const Rcpp::NumericVector& den_in, bool nb2, bool seed_iteration, bool seed_previous, int n_cells, int n_genes_in, bool want_tail_counts, int n_threads);
+RcppExport SEXP _PACE_pace_rho_accumulate_cpp(SEXP etaSEXP, SEXP prev_etaSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP first_geneSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP maskSEXP, SEXP mask_indexSEXP, SEXP num_inSEXP, SEXP den_inSEXP, SEXP nb2SEXP, SEXP seed_iterationSEXP, SEXP seed_previousSEXP, SEXP n_cellsSEXP, SEXP n_genes_inSEXP, SEXP want_tail_countsSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -417,7 +417,8 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
     Rcpp::traits::input_parameter< int >::type n_genes_in(n_genes_inSEXP);
     Rcpp::traits::input_parameter< bool >::type want_tail_counts(want_tail_countsSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_rho_accumulate_cpp(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts));
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_rho_accumulate_cpp(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts, n_threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -752,7 +753,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_single_frame_focal_blocks_cpp", (DL_FUNC) &_PACE_pace_single_frame_focal_blocks_cpp, 4},
     {"_PACE_pace_all_finite_cpp", (DL_FUNC) &_PACE_pace_all_finite_cpp, 1},
     {"_PACE_pace_working_response_cpp", (DL_FUNC) &_PACE_pace_working_response_cpp, 13},
-    {"_PACE_pace_rho_accumulate_cpp", (DL_FUNC) &_PACE_pace_rho_accumulate_cpp, 18},
+    {"_PACE_pace_rho_accumulate_cpp", (DL_FUNC) &_PACE_pace_rho_accumulate_cpp, 19},
     {"_PACE_pace_fitted_mean_column_cpp", (DL_FUNC) &_PACE_pace_fitted_mean_column_cpp, 7},
     {"_PACE_pace_rho_shrink_cpp", (DL_FUNC) &_PACE_pace_rho_shrink_cpp, 2},
     {"_PACE_pace_tau_em_update_cpp", (DL_FUNC) &_PACE_pace_tau_em_update_cpp, 2},

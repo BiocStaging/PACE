@@ -706,7 +706,7 @@ Rcpp::List pace_rho_accumulate_cpp(const Rcpp::NumericMatrix& eta,
                                    const Rcpp::NumericVector& num_in,
                                    const Rcpp::NumericVector& den_in, bool nb2,
                                    bool seed_iteration, bool seed_previous, int n_cells,
-                                   int n_genes_in, bool want_tail_counts) {
+                                   int n_genes_in, bool want_tail_counts, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
   const std::int64_t n = seed_iteration ? n_cells : eta.nrow();
@@ -723,7 +723,7 @@ Rcpp::List pace_rho_accumulate_cpp(const Rcpp::NumericMatrix& eta,
       gene_block(ambient_holder, first_gene), double_span(offset), double_span(rho),
       double_span(alpha), const_span(mask), int_span(mask_index), mask.nrow(), nb2, seed_iteration,
       seed_previous, n, n_genes, out_span(num), out_span(den), &rel_delta_max, &rel_delta_sum, &n_finite,
-      &n_nonfinite, out_span(tail_counts), user_interrupted);
+      &n_nonfinite, out_span(tail_counts), n_threads, user_interrupted);
   raise_if_failed(status, "rho accumulation");
   return Rcpp::List::create(Rcpp::Named("num") = num, Rcpp::Named("den") = den,
                             Rcpp::Named("rel_delta_max") = rel_delta_max,

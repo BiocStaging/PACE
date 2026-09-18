@@ -93,8 +93,8 @@ pace_working_response_cpp <- function(eta, counts, ambient, first_gene, n_genes,
     .Call(`_PACE_pace_working_response_cpp`, eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, n_threads)
 }
 
-pace_rho_accumulate_cpp <- function(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts) {
-    .Call(`_PACE_pace_rho_accumulate_cpp`, eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts)
+pace_rho_accumulate_cpp <- function(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts, n_threads) {
+    .Call(`_PACE_pace_rho_accumulate_cpp`, eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts, n_threads)
 }
 
 pace_fitted_mean_column_cpp <- function(eta_column, counts, ambient, first_gene, gene, offset, rho) {

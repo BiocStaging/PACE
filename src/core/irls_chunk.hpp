@@ -83,7 +83,7 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta,
                       std::int64_t n_genes, Span<double> num,
                       Span<double> den, double* rel_delta_max, double* rel_delta_sum,
                       std::int64_t* n_finite, std::int64_t* n_nonfinite, Span<double> tail_counts,
-                      const InterruptCheck& interrupted);
+                      int n_threads, const InterruptCheck& interrupted);
 
 // The fitted mean of one gene, mu = max(max(exp(eta + offset), 1e-6) +
 // max(ambient rho, 0), 1e-6), and that gene's counts, for the dispersion MLE.

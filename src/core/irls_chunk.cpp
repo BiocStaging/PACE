@@ -26,6 +26,27 @@ void expand_column(const GeneBlock& block, std::int64_t gene, std::int64_t n,
   }
 }
 
+// One gene column of a CSC matrix, expanded over the rows [lo, hi) only, into
+// `out[0 .. hi - lo)`. A worker that owns a slice of the cells must not pay the
+// O(n) assign() that expand_column() does, once per gene, per worker. Row
+// indices within a dgCMatrix column are sorted, so the slice is one binary
+// search away.
+void expand_column_range(const GeneBlock& block, std::int64_t gene, std::int64_t lo,
+                         std::int64_t hi, std::vector<double>& out) {
+  out.assign(static_cast<std::size_t>(hi - lo), 0.0);
+  if (block.matrix.column_pointer.size == 0) return;
+  const std::int64_t column = block.first_gene + gene;
+  const int first = block.matrix.column_pointer[column];
+  const int last = block.matrix.column_pointer[column + 1];
+  const int* rows = block.matrix.row_index.data;
+  const int* begin = std::lower_bound(rows + first, rows + last, static_cast<int>(lo));
+  const int* end = std::lower_bound(begin, rows + last, static_cast<int>(hi));
+  for (const int* it = begin; it != end; ++it) {
+    const std::int64_t k = it - rows;
+    out[static_cast<std::size_t>(*it - lo)] = block.matrix.values[k];
+  }
+}
+
 bool block_covers(const GeneBlock& block, std::int64_t n, std::int64_t n_genes) {
   if (block.matrix.column_pointer.size == 0) return false;
   return block.matrix.n_rows == n && block.first_gene + n_genes <= block.matrix.n_cols;
@@ -37,6 +58,27 @@ double floor_at(double value, double floor_value) {
   if (std::isnan(value)) return value;
   return value > floor_value ? value : floor_value;
 }
+
+// The weight one (cell, gene) puts on the ambient field: the NB precision at the
+// total mean, times the ambient value. Shared by the serial and the parallel
+// paths below so that the arithmetic cannot drift between them.
+inline double rho_weighted_ambient(bool seed_iteration, double count, double eta_value,
+                                   double offset_value, double ambient_value, double rho_value,
+                                   bool nb2, double alpha_gene) {
+  double mu_total;
+  if (seed_iteration) {
+    // The solver's seed: mu = max(y, 0.5), with no contamination part yet.
+    mu_total = floor_at(count, 0.5);
+  } else {
+    const double mu_bio = floor_at(std::exp(eta_value + offset_value), 1e-6);
+    const double spill = floor_at(ambient_value * rho_value, 0.0);
+    mu_total = floor_at(mu_bio + spill, 1e-8);
+  }
+  const double precision = nb2 ? 1 / (mu_total * (1 + mu_total * alpha_gene))
+                               : (1 / mu_total) / (1 + alpha_gene);
+  return precision * ambient_value;
+}
+
 
 }  // namespace
 
@@ -131,7 +173,7 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const
                       std::int64_t n_genes, Span<double> num,
                       Span<double> den, double* rel_delta_max, double* rel_delta_sum,
                       std::int64_t* n_finite, std::int64_t* n_nonfinite, Span<double> tail_counts,
-                      const InterruptCheck& interrupted) {
+                      int n_threads, const InterruptCheck& interrupted) {
   const std::int64_t cells_times_genes = n * n_genes;
   const bool have_previous = prev_eta.size == cells_times_genes;
   const bool want_delta = have_previous || seed_previous;
@@ -162,18 +204,19 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const
   std::int64_t finite_count = 0;
   std::int64_t nonfinite_count = 0;
 
-  for (std::int64_t j = 0; j < n_genes; ++j) {
-    if ((j % 8) == 0 && interrupted && interrupted()) {
-      return Status::failure(StatusCode::interrupted, "interrupted");
-    }
-    expand_column(counts, j, n, y_column);
-    expand_column(ambient, j, n, ambient_column);
-    const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
-    const double* prev_column = have_previous ? prev_eta.data + j * n : nullptr;
-    const double alpha_gene = alpha[j];
-    const std::int64_t mask_column = ambient.first_gene + j;
-    for (std::int64_t i = 0; i < n; ++i) {
-      if (want_delta) {
+  // ---- the convergence metric, serially, in gene-then-cell order ----
+  // Kept serial so delta_sum, a long double summed across both axes, associates
+  // exactly as it always has. It carries no exp() and no sparse expansion unless
+  // the previous eta has to be seeded from the counts, so it is the cheap half.
+  if (want_delta) {
+    for (std::int64_t j = 0; j < n_genes; ++j) {
+      if ((j % 8) == 0 && interrupted && interrupted()) {
+        return Status::failure(StatusCode::interrupted, "interrupted");
+      }
+      if (!have_previous) expand_column(counts, j, n, y_column);
+      const double* eta_column = eta.data + j * n;
+      const double* prev_column = have_previous ? prev_eta.data + j * n : nullptr;
+      for (std::int64_t i = 0; i < n; ++i) {
         const double previous =
             have_previous ? prev_column[i]
                           : std::log(floor_at(y_column[static_cast<std::size_t>(i)], 0.5)) - offset[i];
@@ -194,23 +237,86 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const
           nonfinite_count += 1;
         }
       }
+    }
+  }
+
+  // Without a convergence metric there is nothing accumulated across cells, only
+  // into them: num[i] and den[i] are per-cell, summed over genes. So the CELLS
+  // can be split across workers while the GENES stay in order, and every cell is
+  // touched by exactly one worker. Each cell's long double sum then runs over the
+  // same genes in the same order it did serially, which is what makes this
+  // bit-identical rather than merely deterministic.
+  //
+  // The parallelism sits ABOVE the gene loop on purpose: parallel_for starts and
+  // joins fresh threads on every call, so dispatching once per gene would spend
+  // more on thread creation than the loop costs (about 300 us a call, against
+  // 14,170 calls for a 1,090-gene cohort over 13 iterations).
+  //
+  // The convergence metric is taken FIRST, in its own serial pass just above,
+  // because its delta_sum is a long double accumulated across both cells and
+  // genes: splitting the cells would reassociate it. Separating the two costs a
+  // second traversal but keeps every number identical, and the cheap half is the
+  // one left serial -- the delta is a subtraction, an abs and a divide, while the
+  // half that moves to the workers carries the exp() in mu_bio.
+  if (n_threads > 1) {
+    const std::int64_t cells_per_block = 8192;   // fixed: the partition must not
+                                                 // depend on the worker count
+    const Status status = parallel_for(
+        n, n_threads, cells_per_block,
+        [&](std::int64_t lo, std::int64_t hi) {
+          std::vector<double> y_slice;
+          std::vector<double> ambient_slice;
+          for (std::int64_t j = 0; j < n_genes; ++j) {
+            expand_column_range(counts, j, lo, hi, y_slice);
+            expand_column_range(ambient, j, lo, hi, ambient_slice);
+            const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
+            const double alpha_gene = alpha[j];
+            const std::int64_t mask_column = ambient.first_gene + j;
+            for (std::int64_t i = lo; i < hi; ++i) {
+              const std::size_t slot = static_cast<std::size_t>(i - lo);
+              const double ambient_value = ambient_slice[slot];
+              double weighted_ambient = rho_weighted_ambient(
+                  seed_iteration, y_slice[slot], seed_iteration ? 0.0 : eta_column[i], offset[i],
+                  ambient_value, rho[i], nb2, alpha_gene);
+              if (mask.size != 0) {
+                const std::int64_t row = mask_index.size != 0 ? (mask_index[i] - 1) : i;
+                weighted_ambient = weighted_ambient * mask[row + mask_column * n_mask_rows];
+              }
+              const double numerator = weighted_ambient * y_slice[slot];
+              const double denominator = weighted_ambient * ambient_value;
+              if (!std::isnan(numerator)) num_accumulator[static_cast<std::size_t>(i)] += numerator;
+              if (!std::isnan(denominator)) den_accumulator[static_cast<std::size_t>(i)] += denominator;
+            }
+          }
+        },
+        interrupted);
+    if (!status.is_ok()) return status;
+    for (std::int64_t i = 0; i < n; ++i) {
+      num[i] += static_cast<double>(num_accumulator[static_cast<std::size_t>(i)]);
+      den[i] += static_cast<double>(den_accumulator[static_cast<std::size_t>(i)]);
+    }
+    *rel_delta_max = delta_max;
+    *rel_delta_sum += static_cast<double>(delta_sum);
+    *n_finite += finite_count;
+    *n_nonfinite += nonfinite_count;
+    return Status::success();
+  }
+
+  for (std::int64_t j = 0; j < n_genes; ++j) {
+    if ((j % 8) == 0 && interrupted && interrupted()) {
+      return Status::failure(StatusCode::interrupted, "interrupted");
+    }
+    expand_column(counts, j, n, y_column);
+    expand_column(ambient, j, n, ambient_column);
+    const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
+    const double* prev_column = have_previous ? prev_eta.data + j * n : nullptr;
+    const double alpha_gene = alpha[j];
+    const std::int64_t mask_column = ambient.first_gene + j;
+    for (std::int64_t i = 0; i < n; ++i) {
       const double ambient_value = ambient_column[static_cast<std::size_t>(i)];
-      double mu_total;
-      if (seed_iteration) {
-        // The solver's seed: mu = max(y, 0.5), with no contamination part yet.
-        mu_total = floor_at(y_column[static_cast<std::size_t>(i)], 0.5);
-      } else {
-        const double mu_bio = floor_at(std::exp(eta_column[i] + offset[i]), 1e-6);
-        const double spill = floor_at(ambient_value * rho[i], 0.0);
-        mu_total = floor_at(mu_bio + spill, 1e-8);
-      }
-      double precision;
-      if (nb2) {
-        precision = 1 / (mu_total * (1 + mu_total * alpha_gene));
-      } else {
-        precision = (1 / mu_total) / (1 + alpha_gene);
-      }
-      double weighted_ambient = precision * ambient_value;
+      double weighted_ambient = rho_weighted_ambient(
+          seed_iteration, y_column[static_cast<std::size_t>(i)],
+          seed_iteration ? 0.0 : eta_column[i], offset[i], ambient_value, rho[i], nb2, alpha_gene);
       if (mask.size != 0) {
         const std::int64_t row = mask_index.size != 0 ? (mask_index[i] - 1) : i;
         weighted_ambient = weighted_ambient * mask[row + mask_column * n_mask_rows];
