@@ -768,11 +768,12 @@ build_random_design_multi <- function(df, re_specs) {
     single_precision    = as.integer(interior_precision) != 0L,
     n_threads           = .pace_thread_count(n_threads))
 
-  lapply(seq_len(G_chunk), function(gi) {
-    list(beta      = res$B[, gi],
-         u         = res$U[, gi],
-         Ainv_diag = res$Ainv_diag[, gi])
-  })
+  ## The three matrices go back as matrices. This used to explode them into
+  ## G_chunk lists of three vectors, which the caller then looped over to write
+  ## column by column -- six per-gene allocations, and two full copies of data
+  ## the core had already laid out contiguously, to end up with the same three
+  ## matrices. The caller assigns whole blocks instead.
+  res
 }
 
 
@@ -1213,19 +1214,17 @@ fit_pace_mvpql_multi <- function(Y, X_fixed, df, re_specs,
         n_threads = n_threads,
         interior_precision = iter_precision,
         BPPARAM = BPPARAM)
-      for (jj in seq_along(gene_idx_chk)) {
-        gi  <- gene_idx_chk[jj]
-        res <- per_gene_chk[[jj]]
-        B[, gi]      <- res$beta
-        U[, gi]      <- res$u
-        re_var[, gi] <- pmax(res$Ainv_diag[p + seq_len(q)], 0)
-        ## Always compute SEs so early-exit at convergence still yields valid
-        ## se_B/se_U (mashr filter rejects NA SEs), matching the single-block
-        ## sibling above. Non-final iterations may run a float interior, so
-        ## these are refreshed in double on the last iteration.
-        se_B[, gi] <- sqrt(pmax(res$Ainv_diag[seq_len(p)], 0))
-        se_U[, gi] <- sqrt(pmax(res$Ainv_diag[p + seq_len(q)], 0))
-      }
+      ## Whole blocks: the solve returns its three matrices in gene order.
+      ## Always compute SEs so early-exit at convergence still yields valid
+      ## se_B/se_U (mashr filter rejects NA SEs), matching the single-block
+      ## sibling above. Non-final iterations may run a float interior, so
+      ## these are refreshed in double on the last iteration.
+      random_rows <- p + seq_len(q)
+      B[, gene_idx_chk]      <- per_gene_chk$B
+      U[, gene_idx_chk]      <- per_gene_chk$U
+      re_var[, gene_idx_chk] <- pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0)
+      se_B[, gene_idx_chk]   <- sqrt(pmax(per_gene_chk$Ainv_diag[seq_len(p), , drop = FALSE], 0))
+      se_U[, gene_idx_chk]   <- sqrt(pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0))
       rm(per_gene_chk, z_chk, w_chk, lam_chk)
     }
 

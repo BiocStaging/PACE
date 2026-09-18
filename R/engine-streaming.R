@@ -411,8 +411,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       ## verified NaN-free under stress (lam up to 1e8, alpha up to 50). This keeps
       ## ALL genes valid -- no gene loses its BLUP -- and is a no-op when the float
       ## solve already returned finite values (the canonical case).
-      is_bad <- function(lst) which(vapply(lst, function(r)
-        !all(is.finite(r$beta)) || !all(is.finite(r$u)), logical(1)))
+      ## A gene is bad if any of its beta or u entries is non-finite. colSums
+      ## carries a NaN or an Inf straight through, so one pass over the two
+      ## matrices answers it for every gene at once.
+      is_bad <- function(fit) which(!is.finite(colSums(fit$B)) | !is.finite(colSums(fit$U)))
       bad_jj <- is_bad(per_gene_chk)
       if (length(bad_jj) && iter_precision != 0L) {
         if (verbose)
@@ -426,7 +428,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
           n_threads = n_threads,
           interior_precision = 0L,
           BPPARAM = BPPARAM)
-        for (bi in seq_along(bad_jj)) per_gene_chk[[bad_jj[bi]]] <- redo[[bi]]
+        per_gene_chk$B[, bad_jj] <- redo$B
+        per_gene_chk$U[, bad_jj] <- redo$U
+        per_gene_chk$Ainv_diag[, bad_jj] <- redo$Ainv_diag
         bad_jj <- is_bad(per_gene_chk)          ## did the repair actually take?
       }
       ## Anything still non-finite is unrecoverable and goes into the saved fit,
@@ -439,16 +443,16 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
           cat(sprintf("    [nan-guard] it=%d chunk@%d: %d gene(s) STILL non-finite after double solve\n",
                       it, cs, length(bad_jj)))
       }
-      for (jj in seq_along(gene_idx_chk)) {
-        gi  <- gene_idx_chk[jj]
-        res <- per_gene_chk[[jj]]
-        B[, gi]      <- res$beta
-        U[, gi]      <- res$u
-        re_var[, gi] <- pmax(res$Ainv_diag[(p + 1):(p + q)], 0)
-        if (last_iter) {
-          se_B[, gi] <- sqrt(pmax(res$Ainv_diag[seq_len(p)], 0))
-          se_U[, gi] <- sqrt(pmax(res$Ainv_diag[(p + 1):(p + q)], 0))
-        }
+      ## Whole blocks, not one gene at a time. The columns are already in gene
+      ## order and contiguous, so these are three (or five) assignments instead
+      ## of six per gene.
+      random_rows <- (p + 1):(p + q)
+      B[, gene_idx_chk]      <- per_gene_chk$B
+      U[, gene_idx_chk]      <- per_gene_chk$U
+      re_var[, gene_idx_chk] <- pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0)
+      if (last_iter) {
+        se_B[, gene_idx_chk] <- sqrt(pmax(per_gene_chk$Ainv_diag[seq_len(p), , drop = FALSE], 0))
+        se_U[, gene_idx_chk] <- sqrt(pmax(per_gene_chk$Ainv_diag[random_rows, , drop = FALSE], 0))
       }
       rm(per_gene_chk, z_chk, w_chk, lam_chk, colsum_w)
     }
