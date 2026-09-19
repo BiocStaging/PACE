@@ -792,6 +792,12 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     B      <- driven$B
     U      <- driven$U
     se_B   <- driven$se_B
+    ## Raise the core's warnings HERE, with no C++ frame live. Raising them
+    ## inside the binding meant that under options(warn = 2) the first one
+    ## longjmped out of it, skipping the destructors that hand the counts, the
+    ## ambient field and Z back from R's precious list -- they would stay
+    ## protected for the rest of the session.
+    for (message_text in driven$warnings) warning(message_text, call. = FALSE)
     se_U   <- driven$se_U
     alpha  <- driven$alpha
     add_rho     <- driven$rho

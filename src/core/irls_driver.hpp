@@ -105,8 +105,15 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
 // The loop itself.
 // ---------------------------------------------------------------------------
 
-// Which prior the variance components are shrunk under, in the order
-// fit_pace_mvpql_streaming()'s `tau_shrinkage` argument lists them.
+// Which prior the variance components are shrunk under.
+//
+// ⚠️ The order is the one the CALL SITE matches against -- the literal
+// c("shared", "hierarchical", "adaptive", "half_cauchy") at
+// engine-streaming.R:788 -- and NOT the order the `tau_shrinkage` argument is
+// declared in, which is c("hierarchical", "shared", ...). Those two disagree in
+// their first two entries. Reordering this enum to agree with the declaration
+// would swap `shared` and `hierarchical` and silently change every fit that
+// uses either. Change the enum only together with that match() vector.
 enum class TauShrinkage { shared, hierarchical, adaptive, half_cauchy };
 
 // One random-effect block as the tau bookkeeping sees it.

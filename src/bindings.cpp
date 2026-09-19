@@ -1440,9 +1440,15 @@ Rcpp::List pace_irls_driver_cpp(
                                                               pace::Span<const int> genes) {
     std::string named;
     const std::int64_t shown = std::min<std::int64_t>(genes.size, 5);
-    for (std::int64_t k = 0; k < shown && gene_names.size() > 0; ++k) {
-      if (!named.empty()) named += ", ";
-      named += Rcpp::as<std::string>(gene_names[genes[k] - 1]);
+    // k > 0, not !named.empty(): an empty string in colnames(Y) would otherwise
+    // swallow the separator before the NEXT name, where R's paste(collapse=", ")
+    // keeps it. The index is bounded too -- the old guard established only that
+    // gene_names was non-empty, not that it covered every gene.
+    for (std::int64_t k = 0; k < shown; ++k) {
+      const std::int64_t gene = genes[k] - 1;
+      if (gene < 0 || gene >= static_cast<std::int64_t>(gene_names.size())) continue;
+      if (k > 0) named += ", ";
+      named += Rcpp::as<std::string>(gene_names[gene]);
     }
     char buffer[1024];
     std::snprintf(buffer, sizeof(buffer),
@@ -1518,12 +1524,19 @@ Rcpp::List pace_irls_driver_cpp(
 
   const pace::Status status = pace::run_irls_loop(inputs, options, r_log_nbinom, r_trigamma,
                                                   reporter, outputs, user_interrupted);
-  for (std::size_t k = 0; k < deferred_warnings.size(); ++k) {
-    Rf_warningcall(R_NilValue, "%s", deferred_warnings[k].c_str());
-  }
   raise_if_failed(status, "IRLS loop");
 
+  // The warnings are RETURNED, not raised here. Rf_warningcall() under
+  // options(warn = 2) -- or any calling handler promoting a warning to an
+  // error -- longjmps out of this function, and a longjmp is not a C++ unwind,
+  // so the destructors of count_holder, ambient_holder, z_holder and the design
+  // buffers never run. Those holders release their SEXPs from R's precious list
+  // in their destructors, so the counts, the ambient field and Z would stay
+  // protected for the life of the session, along with the design vectors (some
+  // 10 MB a block at 1.2M cells). Buffering in the core moved that longjmp one
+  // frame out; raising from R removes it.
   return Rcpp::List::create(
+      Rcpp::Named("warnings") = Rcpp::wrap(deferred_warnings),
       Rcpp::Named("B") = beta_out, Rcpp::Named("U") = u_out, Rcpp::Named("se_B") = se_beta,
       Rcpp::Named("se_U") = se_u, Rcpp::Named("alpha") = alpha,
       Rcpp::Named("tau_g_array") = tau_g_array, Rcpp::Named("tau_flat") = tau_flat,

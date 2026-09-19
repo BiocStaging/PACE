@@ -176,7 +176,14 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
     // ---- the ridge must not be quantised away in single precision ----
     // Below eps_float * sum(w) the ridge vanishes, at a threshold that falls as
     // 1/n. Decided over the whole logical chunk, as the R it replaces did.
-    int chunk_precision = last_iter ? 0 : interior_precision;
+    // Gaussian forces the double interior. The R fused branch already did this
+    // (engine-streaming.R: "if (last_iter || is_gaussian) 0L") and gave the
+    // reason: the compositional neighbour kernels make the single-precision
+    // per-gene Cholesky borderline on continuous intensities, so the float
+    // NaN-guard below would fire every iteration. Applying it here rather than
+    // at the call site means a caller cannot lose it by passing 1 -- which
+    // paceModelGaussian() does.
+    int chunk_precision = (last_iter || gaussian) ? 0 : interior_precision;
     if (chunk_precision != 0) {
       double lam_min = infinity;
       double w_max = -infinity;
@@ -547,7 +554,12 @@ Status update_variance_components(const IrlsLoopInputs& inputs, const IrlsLoopOp
           const double estimate =
               estimate_d0(log_variance[static_cast<std::size_t>(k)],
                           n_log_finite[static_cast<std::size_t>(k)], 5.0, trigamma);
-          d0[static_cast<std::size_t>(k)] = std::max(estimate, options.d0_min);
+          // r_pmax, not std::max: R's max(estimate, d0_min) is NA when d0_min
+          // is NA, which it is if R_D0_MIN is set to something non-numeric, and
+          // that NA propagates visibly into every per-gene tau. std::max is
+          // (a < b) ? b : a and estimate < NaN is false, so it would return the
+          // estimate and turn a malformed configuration into a normal-looking fit.
+          d0[static_cast<std::size_t>(k)] = r_pmax(estimate, options.d0_min);
         }
         status = tau_eb_apply(Span<const double>(s2.data(), n_rows * n_genes), n_rows, n_genes,
                               reml_factor, Span<const double>(panel.data(), n_rows),
@@ -598,6 +610,15 @@ Status update_variance_components(const IrlsLoopInputs& inputs, const IrlsLoopOp
 Status run_irls_loop(const IrlsLoopInputs& inputs, const IrlsLoopOptions& options,
                      LogDensity density, Trigamma trigamma, const IrlsLoopReporter& reporter,
                      const IrlsLoopOutputs& outputs, const InterruptCheck& interrupted) {
+  // The standard errors are written on the LAST iteration only, so every other
+  // outcome must leave them missing. That used to rely on the caller having
+  // pre-filled NA_REAL, which is a contract no compiler checks: a caller that
+  // handed over a default-constructed matrix would get ZEROS, and a zero
+  // standard error is indistinguishable downstream from a real one. Fill them
+  // here instead, so the guarantee belongs to the function that owns it.
+  for (std::int64_t i = 0; i < outputs.se_beta.size; ++i) outputs.se_beta[i] = not_a_number;
+  for (std::int64_t i = 0; i < outputs.se_u.size; ++i) outputs.se_u[i] = not_a_number;
+
   if (inputs.solve_blocks == nullptr || inputs.tau_blocks == nullptr) {
     return Status::failure(StatusCode::invalid_argument, "the design blocks are required");
   }
