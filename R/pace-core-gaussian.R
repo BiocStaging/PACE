@@ -60,6 +60,7 @@
 #' @param ... Passed to `pace_fit_streaming_gaussian()`.
 #'
 #' @return A [PACEFit].
+#' @rdname paceModelGaussian
 #' @export
 setMethod(
   "paceModelGaussian", "SpatialExperiment",
@@ -104,7 +105,14 @@ setMethod(
 #' counterpart of `pace_fit_streaming()`; see the notes at the top of this file
 #' for what differs and why they are kept apart.
 #'
-#' @inheritParams pace_fit_streaming
+#' @param Y,df,types,celltype_col,image_col,coord_cols Intensities, the model
+#'   frame, the cell types and the columns naming them.
+#' @param h_bio,h_tech,eps Kernel bandwidths and the neighbour radius.
+#' @param condition_col,kernel_per_image,image_re,drop_sparse_neff,within_image
+#'   Design options, as `pace_fit_streaming()` takes them.
+#' @param n_iter,threads,chunk_size,tau_shrinkage,early_stop_tol,min_iter,tau_max
+#'   Fitting control, as `pace_fit_streaming()` takes them.
+#' @param verbose Print the fitting trace.
 #' @return A list with the fit, the model frame, the fixed-effect design, the
 #'   intensities, the kernels and the cell types.
 #' @keywords internal
