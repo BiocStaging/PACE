@@ -98,14 +98,6 @@ build_random_design_multi <- function(df, re_specs) {
     groups <- levels(df[[gcol]])
     K_g_b  <- length(groups)
     cell_groups <- as.integer(df[[gcol]])
-    cbg <- split(seq_len(n), cell_groups)
-    if (length(cbg) != K_g_b) {
-      out_idx <- vector("list", K_g_b)
-      nm <- match(as.integer(names(cbg)), seq_len(K_g_b))
-      for (k in seq_along(cbg)) out_idx[[nm[k]]] <- cbg[[k]]
-      out_idx[vapply(out_idx, is.null, logical(1))] <- list(integer(0))
-      cbg <- out_idx
-    }
 
     ## model.matrix-based random-effect block.
     X_terms <- stats::model.matrix(spec$formula, df)
@@ -121,14 +113,24 @@ build_random_design_multi <- function(df, re_specs) {
     storage.mode(X_terms) <- "double"
     K_t_b   <- ncol(X_terms)
     term_levels <- colnames(X_terms)
-    ii <- rep(seq_len(n), times = K_t_b)
-    jj <- as.integer(rep(seq_len(K_t_b) - 1L, each = n) * K_g_b +
-                       rep(cell_groups, times = K_t_b))
-    xx <- as.numeric(X_terms)
-    Z_b <- Matrix::sparseMatrix(i = ii, j = jj, x = xx,
-                                 dims = c(n, K_t_b * K_g_b))
+    ## The design is assembled in the core. R used to build three vectors of
+    ## n * K_terms elements -- at 1.2M cells and twenty terms roughly 400 MB --
+    ## and hand them to Matrix::sparseMatrix(), which then sorted them into
+    ## column order. Walking the groups in order and the cells ascending within
+    ## a group emits the rows already sorted, so the compressed-column arrays
+    ## are written once, with no triplet buffers and no sort.
+    design <- pace_random_design_block_cpp(X_terms, cell_groups - 1L, K_g_b)
+    Z_b <- design$Z
     colnames(Z_b) <- paste0(rep(groups, times = K_t_b), "::",
                             rep(term_levels, each = K_g_b))
+    ## The same grouping the core already computed on its single pass, handed
+    ## back as the list of ascending cell indices per group that split() gave.
+    ## A group with no cells is integer(0), as it was before.
+    starts <- design$group_start
+    cbg <- lapply(seq_len(K_g_b), function(g) {
+      if (starts[g + 1L] == starts[g]) integer(0)
+      else design$cells_by_group[(starts[g] + 1L):starts[g + 1L]] + 1L
+    })
     blocks[[b]] <- list(
       group_col    = gcol,
       term_levels  = term_levels,

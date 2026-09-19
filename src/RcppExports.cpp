@@ -844,6 +844,19 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_random_design_block_cpp
+Rcpp::List pace_random_design_block_cpp(const Rcpp::NumericMatrix& x_terms, const Rcpp::IntegerVector& cell_group, int n_groups);
+RcppExport SEXP _PACE_pace_random_design_block_cpp(SEXP x_termsSEXP, SEXP cell_groupSEXP, SEXP n_groupsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type x_terms(x_termsSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type cell_group(cell_groupSEXP);
+    Rcpp::traits::input_parameter< int >::type n_groups(n_groupsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_random_design_block_cpp(x_terms, cell_group, n_groups));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_neighbour_kernels_cpp", (DL_FUNC) &_PACE_pace_neighbour_kernels_cpp, 9},
@@ -894,6 +907,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_dispersion_pass_cpp", (DL_FUNC) &_PACE_pace_dispersion_pass_cpp, 19},
     {"_PACE_pace_fit_pass1_cpp", (DL_FUNC) &_PACE_pace_fit_pass1_cpp, 28},
     {"_PACE_pace_working_response_chunk_cpp", (DL_FUNC) &_PACE_pace_working_response_chunk_cpp, 22},
+    {"_PACE_pace_random_design_block_cpp", (DL_FUNC) &_PACE_pace_random_design_block_cpp, 3},
     {NULL, NULL, 0}
 };
 

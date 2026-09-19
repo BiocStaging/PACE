@@ -6,6 +6,10 @@ setGeneric("paceFit", function(object, ...) standardGeneric("paceFit"))
 #' @export
 setGeneric("paceModel", function(object, ...) standardGeneric("paceModel"))
 
+#' @rdname paceModelGaussian
+#' @export
+setGeneric("paceModelGaussian", function(object, ...) standardGeneric("paceModelGaussian"))
+
 #' @rdname paceShrink
 #' @export
 setGeneric("paceShrink", function(object, ...) standardGeneric("paceShrink"))
