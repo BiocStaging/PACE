@@ -344,7 +344,18 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## mu_bio_chk = pmax(Y_chk, 0.5), mu_chk = mu_bio_chk (add_rho is 0 at iter 1
   ## so mu_spill = 0). For iter > 1 we reconstruct mu_bio_chk / mu_chk from the
   ## current coefficients + add_rho + a_chk (identical to dense mu_bio / mu).
-  for (it in seq_len(n_iter)) {
+  ## The whole outer iteration runs in the core (pace::run_irls_loop) unless the
+  ## fused path is asked for: fuse_rho still builds its chunk loop in R, so it
+  ## keeps the R loop below. That loop stays for a second reason -- it is the
+  ## reference the core driver is gated against, coefficient for coefficient
+  ## (tests/testthat/test-irls-driver.R), and a port with no oracle left is a
+  ## port nobody can check again. R_IRLS_R_LOOP is how that gate reaches it, and
+  ## how a fit can be put back on the R path without a rebuild.
+  use_core_driver   <- !fuse_rho && !nzchar(Sys.getenv("R_IRLS_R_LOOP"))
+  r_loop_iterations <- if (use_core_driver) integer(0) else seq_len(n_iter)
+  if (use_core_driver && !is.null(data_informed_W))
+    stopifnot(identical(dim(data_informed_W), dim(tau_g_array)))
+  for (it in r_loop_iterations) {
     t_it      <- Sys.time()
     ## SPEED 4 (guarded): EARLY STOP. Decide at the TOP of the iteration using
     ## the PREVIOUS iteration's MEAN rel_delta so that the stopping iteration is
@@ -753,6 +764,64 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                     it, it - 1L, hist$rel_delta_mean[it - 1L], early_stop_tol, hist$rel_delta[it - 1L]))
       break
     }
+  }
+
+  if (use_core_driver) {
+    ## One call for the whole fit. The core holds B, U, re_var, alpha, tau and
+    ## the contamination loading across the iterations, so the full-panel
+    ## matrices each pass used to hand back -- and that R then copied into its
+    ## own state -- are never allocated. Verbose lines are printed from the core
+    ## as they happen; warnings are collected there and raised when it returns.
+    driven <- pace_irls_driver_cpp(
+      x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, X_fixed, p, Z,
+      re$blocks, re$X_terms_list, re$cells_by_grp_list, re$cell_grp_list,
+      Y, a_cache, offset_vec, sample_weight_vec, mask_matrix, mask_index,
+      if (is.null(data_informed_W)) empty_matrix else data_informed_W,
+      alpha, if (is.null(colnames(Y))) character(0) else colnames(Y),
+      n, q, g_n,
+      as.integer(n_iter), as.integer(min_iter), as.numeric(early_stop_tol),
+      as.numeric(alpha_warmup), format(alpha_warmup),
+      disp_nb2, is_gaussian, isTRUE(alpha_zero_collapse), as.numeric(alpha_max_n),
+      isTRUE(alpha_fast_density), as.integer(interior_precision),
+      as.integer(chunk_size), as.integer(sub_genes),
+      if (is.null(tau_max)) NA_real_ else as.numeric(tau_max),
+      match(tau_shrinkage, c("shared", "hierarchical", "adaptive", "half_cauchy")) - 1L,
+      as.numeric(Sys.getenv("R_D0_MIN", unset = "1")),
+      nzchar(Sys.getenv("R_REML_TAU", unset = "")),
+      nzchar(Sys.getenv("R_RD_DIAG")), verbose, .pace_thread_count(n_threads))
+    B      <- driven$B
+    U      <- driven$U
+    se_B   <- driven$se_B
+    se_U   <- driven$se_U
+    alpha  <- driven$alpha
+    add_rho     <- driven$rho
+    tau_g_array <- driven$tau_g_array
+    rownames(tau_g_array) <- colnames(Z)
+    if (!is.null(colnames(Y))) colnames(tau_g_array) <- colnames(Y)
+    it        <- as.integer(driven$n_iter)
+    converged <- isTRUE(driven$converged)
+    ## The core reports the variance components as the flat length-q vector the
+    ## blocks are laid out in; laying them back out as one named matrix per block
+    ## is the same reshape .em_tau_blocks() makes, and it is BY ROW -- the block
+    ## slice runs term-major with the group varying fastest.
+    tau_blocks_from_vector <- function(tau_vec) {
+      lapply(re$blocks, function(blk_i) {
+        rng <- (blk_i$col_offset + 1L):(blk_i$col_offset + blk_i$n_cols)
+        matrix(tau_vec[rng], blk_i$K_terms, blk_i$K_groups, byrow = TRUE,
+               dimnames = list(blk_i$term_levels, blk_i$group_levels))
+      })
+    }
+    tau_blocks <- tau_blocks_from_vector(driven$tau_flat)
+    run_iterations <- seq_len(it)
+    hist$tau_blocks <- lapply(run_iterations,
+                              function(i) tau_blocks_from_vector(driven$history_tau_flat[, i]))
+    hist$alpha      <- lapply(run_iterations, function(i) driven$history_alpha[, i])
+    hist$rel_delta      <- driven$history_rel_delta[run_iterations]
+    hist$rel_delta_mean <- driven$history_rel_delta_mean[run_iterations]
+    hist$n_nan_genes    <- as.integer(driven$history_n_nan_genes[run_iterations])
+    hist$n_nonfinite    <- driven$history_n_nonfinite[run_iterations]
+    hist$tau_max_seen   <- driven$history_tau_max_seen[run_iterations]
+    rm(driven)
   }
 
   rownames(B)    <- colnames(X_fixed); rownames(U)    <- colnames(Z)

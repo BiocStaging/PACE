@@ -18,6 +18,7 @@
 #include "core/gene_solve.hpp"
 #include "core/hyperparameters.hpp"
 #include "core/irls_chunk.hpp"
+#include "core/irls_driver.hpp"
 #include "core/neighbourhood.hpp"
 #include "core/linear_predictor.hpp"
 #include "core/preprocess.hpp"
@@ -1114,19 +1115,9 @@ Rcpp::List pace_rho_pass_cpp(
     bool want_tail_counts, int n_cells, int chunk_size, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
+  const CscHolder z_holder(z_design);
   const std::int64_t n = n_cells;
   const std::int64_t n_genes_total = u_in.ncol();
-
-  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
-  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
-  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
-  const Rcpp::NumericVector z_values = z_design.slot("x");
-  pace::CscView z_view;
-  z_view.column_pointer = int_span(z_column_pointer);
-  z_view.row_index = int_span(z_row_index);
-  z_view.values = double_span(z_values);
-  z_view.n_rows = z_dims[0];
-  z_view.n_cols = z_dims[1];
 
   Rcpp::NumericVector num(n);
   Rcpp::NumericVector den(n);
@@ -1135,42 +1126,15 @@ Rcpp::List pace_rho_pass_cpp(
   double rel_delta_sum = 0;
   std::int64_t n_finite = 0;
   std::int64_t n_nonfinite = 0;
-
-  const std::int64_t width = std::min<std::int64_t>(chunk_size, n_genes_total);
-  std::vector<double> eta(static_cast<std::size_t>(n * width));
-  std::vector<double> prev_eta(have_previous ? static_cast<std::size_t>(n * width) : 0);
-  std::vector<int> chunk_genes(static_cast<std::size_t>(width));
-
-  for (std::int64_t first = 0; first < n_genes_total; first += width) {
-    const std::int64_t m_chunk = std::min(width, n_genes_total - first);
-    for (std::int64_t j = 0; j < m_chunk; ++j) {
-      chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
-    }
-    const pace::Span<const int> genes(chunk_genes.data(), m_chunk);
-    pace::Status status = pace::eta_block(
-        double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(b_in), z_view,
-        const_span(u_in), genes, n, n_genes_total,
-        pace::Span<double>(eta.data(), n * m_chunk), n_threads, user_interrupted);
-    raise_if_failed(status, "eta block");
-    if (have_previous) {
-      status = pace::eta_block(
-          double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(prev_b), z_view,
-          const_span(prev_u), genes, n, n_genes_total,
-          pace::Span<double>(prev_eta.data(), n * m_chunk), n_threads, user_interrupted);
-      raise_if_failed(status, "previous eta block");
-    }
-    status = pace::rho_accumulate(
-        pace::Span<const double>(eta.data(), n * m_chunk),
-        have_previous ? pace::Span<const double>(prev_eta.data(), n * m_chunk)
-                      : pace::Span<const double>(nullptr, 0),
-        gene_block(count_holder, static_cast<int>(first) + 1),
-        gene_block(ambient_holder, static_cast<int>(first) + 1), double_span(offset),
-        double_span(rho), pace::Span<const double>(alpha.begin() + first, m_chunk),
-        const_span(mask), int_span(mask_index), mask.nrow(), nb2, false, !have_previous, n,
-        m_chunk, out_span(num), out_span(den), &rel_delta_max, &rel_delta_sum, &n_finite,
-        &n_nonfinite, out_span(tail_counts), n_threads, user_interrupted);
-    raise_if_failed(status, "rho accumulation");
-  }
+  const pace::Status status = pace::rho_pass(
+      double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, const_span(b_in),
+      const_span(u_in), const_span(prev_b), const_span(prev_u), have_previous,
+      gene_block(count_holder, 1), gene_block(ambient_holder, 1), double_span(offset),
+      double_span(rho), double_span(alpha), const_span(mask), int_span(mask_index), mask.nrow(),
+      nb2, n, n_genes_total, chunk_size, out_span(num), out_span(den), &rel_delta_max,
+      &rel_delta_sum, &n_finite, &n_nonfinite, out_span(tail_counts), n_threads,
+      user_interrupted);
+  raise_if_failed(status, "rho accumulation");
   return Rcpp::List::create(
       Rcpp::Named("num") = num, Rcpp::Named("den") = den,
       Rcpp::Named("rel_delta_max") = rel_delta_max,
@@ -1208,65 +1172,24 @@ Rcpp::List pace_dispersion_pass_cpp(
     bool fast_density, int n_cells, int chunk_size, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
+  const CscHolder z_holder(z_design);
   const std::int64_t n = n_cells;
   const std::int64_t n_genes_total = u_in.ncol();
 
-  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
-  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
-  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
-  const Rcpp::NumericVector z_values = z_design.slot("x");
-  pace::CscView z_view;
-  z_view.column_pointer = int_span(z_column_pointer);
-  z_view.row_index = int_span(z_row_index);
-  z_view.values = double_span(z_values);
-  z_view.n_rows = z_dims[0];
-  z_view.n_cols = z_dims[1];
-
   Rcpp::NumericVector alpha(n_genes_total);
-  double n_noninteger_total = 0;
-  const std::int64_t width = std::min<std::int64_t>(chunk_size, n_genes_total);
-  std::vector<double> eta(static_cast<std::size_t>(n * width));
-  std::vector<int> chunk_genes(static_cast<std::size_t>(width));
-
-  for (std::int64_t first = 0; first < n_genes_total; first += width) {
-    const std::int64_t m_chunk = std::min(width, n_genes_total - first);
-    for (std::int64_t j = 0; j < m_chunk; ++j) {
-      chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
-    }
-    const pace::Status eta_status = pace::eta_block(
-        double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(b_in), z_view,
-        const_span(u_in), pace::Span<const int>(chunk_genes.data(), m_chunk), n, n_genes_total,
-        pace::Span<double>(eta.data(), n * m_chunk), n_threads, user_interrupted);
-    raise_if_failed(eta_status, "eta block");
-
-    if (gaussian) {
-      // The identity-link dispersion step: the residual variance, floored where
-      // the R engine's pmax(sigma2_new, 1e-8) floors it. No density, no search.
-      const pace::Status sigma2_status = pace::residual_variance_chunk(
-          pace::Span<const double>(eta.data(), n * m_chunk),
-          gene_block(count_holder, static_cast<int>(first) + 1), double_span(offset), 1e-8, n,
-          m_chunk, pace::Span<double>(alpha.begin() + first, m_chunk), n_threads,
-          user_interrupted);
-      raise_if_failed(sigma2_status, "residual variance");
-      continue;
-    }
-
-    std::int64_t n_noninteger = 0;
-    const pace::Status status = pace::dispersion_chunk(
-        pace::Span<const double>(eta.data(), n * m_chunk),
-        gene_block(count_holder, static_cast<int>(first) + 1),
-        gene_block(ambient_holder, static_cast<int>(first) + 1), double_span(offset),
-        double_span(rho), nb2, zero_collapse, max_cells, r_log_nbinom, fast_density, n, m_chunk,
-        pace::Span<double>(alpha.begin() + first, m_chunk), &n_noninteger, n_threads,
-        user_interrupted);
-    raise_if_failed(status, "dispersion");
-    n_noninteger_total += static_cast<double>(n_noninteger);
-  }
+  std::int64_t n_noninteger = 0;
+  const pace::Status status = pace::dispersion_pass(
+      double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, const_span(b_in),
+      const_span(u_in), gene_block(count_holder, 1), gene_block(ambient_holder, 1),
+      double_span(offset), double_span(rho), nb2, gaussian, zero_collapse, max_cells,
+      r_log_nbinom, fast_density, n, n_genes_total, chunk_size, out_span(alpha), &n_noninteger,
+      n_threads, user_interrupted);
+  raise_if_failed(status, "dispersion");
   for (R_xlen_t j = 0; j < alpha.size(); ++j) {
     if (ISNAN(alpha[j])) alpha[j] = NA_REAL;
   }
   return Rcpp::List::create(Rcpp::Named("alpha") = alpha,
-                            Rcpp::Named("n_noninteger") = n_noninteger_total);
+                            Rcpp::Named("n_noninteger") = static_cast<double>(n_noninteger));
 }
 
 // One logical chunk's working response and weights, built a sub-block at a time
@@ -1312,20 +1235,10 @@ Rcpp::List pace_fit_pass1_cpp(
     int interior_precision, bool last_iter, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
+  const CscHolder z_holder(z_design);
   const std::int64_t n = n_cells;
   const std::int64_t q_total = u_in.nrow();
   const std::int64_t n_genes_total = u_in.ncol();
-
-  const Rcpp::IntegerVector z_dims = z_design.slot("Dim");
-  const Rcpp::IntegerVector z_column_pointer = z_design.slot("p");
-  const Rcpp::IntegerVector z_row_index = z_design.slot("i");
-  const Rcpp::NumericVector z_values = z_design.slot("x");
-  pace::CscView z_view;
-  z_view.column_pointer = int_span(z_column_pointer);
-  z_view.row_index = int_span(z_row_index);
-  z_view.values = double_span(z_values);
-  z_view.n_rows = z_dims[0];
-  z_view.n_cols = z_dims[1];
 
   // Converted once for the whole pass, not once per chunk.
   const SolveDesign design =
@@ -1338,158 +1251,15 @@ Rcpp::List pace_fit_pass1_cpp(
   Rcpp::NumericMatrix se_u(q_total, n_genes_total);
   std::vector<int> nan_genes;
 
-  const std::int64_t width = std::min<std::int64_t>(chunk_size, n_genes_total);
-  std::vector<double> z_buffer(static_cast<std::size_t>(n * width));
-  std::vector<double> w_buffer(static_cast<std::size_t>(n * width));
-  std::vector<double> colsum_w(static_cast<std::size_t>(width));
-  std::vector<double> eta_scratch;
-  std::vector<int> chunk_genes(static_cast<std::size_t>(width));
-  std::vector<double> chunk_beta(static_cast<std::size_t>(p * width));
-  std::vector<double> chunk_u(static_cast<std::size_t>(q_total * width));
-  std::vector<double> chunk_ainv(static_cast<std::size_t>((p + q_total) * width));
-
-  for (std::int64_t first = 0; first < n_genes_total; first += width) {
-    const std::int64_t m_chunk = std::min(width, n_genes_total - first);
-    for (std::int64_t j = 0; j < m_chunk; ++j) {
-      chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
-    }
-
-    // ---- the working response, a sub-block of genes at a time ----
-    const std::int64_t step = sub_genes > 0 ? std::min<std::int64_t>(sub_genes, m_chunk) : m_chunk;
-    for (std::int64_t start = 0; start < m_chunk; start += step) {
-      const std::int64_t len = std::min(step, m_chunk - start);
-      pace::Span<const double> eta_span;
-      if (!seed_iteration) {
-        eta_scratch.resize(static_cast<std::size_t>(n * len));
-        const pace::Status eta_status = pace::eta_block(
-            double_span(x1), x1_is_unit, const_span(x_fixed), p, const_span(b_in), z_view,
-            const_span(u_in), pace::Span<const int>(chunk_genes.data() + start, len), n,
-            n_genes_total, pace::Span<double>(eta_scratch.data(), n * len), n_threads,
-            user_interrupted);
-        raise_if_failed(eta_status, "eta block");
-        eta_span = pace::Span<const double>(eta_scratch.data(), n * len);
-      }
-      const pace::Status status = pace::working_response(
-          eta_span, gene_block(count_holder, static_cast<int>(first + start) + 1),
-          gene_block(ambient_holder, static_cast<int>(first + start) + 1), double_span(offset),
-          double_span(rho), pace::Span<const double>(alpha.begin() + first + start, len),
-          double_span(sample_weight), nb2, gaussian, seed_iteration, n, len,
-          pace::Span<double>(z_buffer.data() + start * n, n * len),
-          pace::Span<double>(w_buffer.data() + start * n, n * len),
-          pace::Span<double>(colsum_w.data() + start, len), n_threads, user_interrupted);
-      raise_if_failed(status, "working response");
-    }
-
-    // ---- the ridge must not be quantised away in single precision ----
-    // Below eps_float * sum(w) the ridge vanishes, at a threshold that falls as
-    // 1/n. Decided over the whole logical chunk, as the R it replaces did.
-    int chunk_precision = last_iter ? 0 : interior_precision;
-    if (chunk_precision != 0) {
-      double lam_min = R_PosInf;
-      double w_max = R_NegInf;
-      for (std::int64_t j = 0; j < m_chunk; ++j) {
-        for (std::int64_t k = 0; k < q_total; ++k) {
-          const double value = lam_diag(k, first + j);
-          if (value < lam_min) lam_min = value;
-        }
-        if (colsum_w[static_cast<std::size_t>(j)] > w_max) w_max = colsum_w[static_cast<std::size_t>(j)];
-      }
-      if (std::isfinite(lam_min) && std::isfinite(w_max) && lam_min < 1e-5 * w_max) {
-        chunk_precision = 0;
-      }
-    }
-
-    // ---- the per-gene solve ----
-    std::vector<double> lam_chunk(static_cast<std::size_t>(q_total * m_chunk));
-    for (std::int64_t j = 0; j < m_chunk; ++j) {
-      for (std::int64_t k = 0; k < q_total; ++k) {
-        lam_chunk[static_cast<std::size_t>(k + j * q_total)] = lam_diag(k, first + j);
-      }
-    }
-    const pace::Status solve_status = pace::solve_genes_chunk(
-        const_span(solve_x_fixed), n, p, design.blocks,
-        pace::Span<const double>(w_buffer.data(), n * m_chunk),
-        pace::Span<const double>(z_buffer.data(), n * m_chunk),
-        pace::Span<const double>(lam_chunk.data(), q_total * m_chunk), q_total, m_chunk,
-        chunk_precision != 0, n_threads, user_interrupted,
-        pace::Span<double>(chunk_beta.data(), p * m_chunk),
-        pace::Span<double>(chunk_u.data(), q_total * m_chunk),
-        pace::Span<double>(chunk_ainv.data(), (p + q_total) * m_chunk));
-    raise_if_failed(solve_status, "gene solve");
-
-    // ---- the lossless NaN guard: re-solve any bad gene in double ----
-    std::vector<std::int64_t> bad;
-    for (std::int64_t j = 0; j < m_chunk; ++j) {
-      bool finite = true;
-      for (std::int64_t k = 0; k < p && finite; ++k) {
-        if (!std::isfinite(chunk_beta[static_cast<std::size_t>(k + j * p)])) finite = false;
-      }
-      for (std::int64_t k = 0; k < q_total && finite; ++k) {
-        if (!std::isfinite(chunk_u[static_cast<std::size_t>(k + j * q_total)])) finite = false;
-      }
-      if (!finite) bad.push_back(j);
-    }
-    if (!bad.empty() && chunk_precision != 0) {
-      const std::int64_t n_bad = static_cast<std::int64_t>(bad.size());
-      std::vector<double> w_bad(static_cast<std::size_t>(n * n_bad));
-      std::vector<double> z_bad(static_cast<std::size_t>(n * n_bad));
-      std::vector<double> lam_bad(static_cast<std::size_t>(q_total * n_bad));
-      std::vector<double> beta_bad(static_cast<std::size_t>(p * n_bad));
-      std::vector<double> u_bad(static_cast<std::size_t>(q_total * n_bad));
-      std::vector<double> ainv_bad(static_cast<std::size_t>((p + q_total) * n_bad));
-      for (std::int64_t j = 0; j < n_bad; ++j) {
-        const std::int64_t source = bad[static_cast<std::size_t>(j)];
-        std::copy(w_buffer.begin() + source * n, w_buffer.begin() + (source + 1) * n,
-                  w_bad.begin() + j * n);
-        std::copy(z_buffer.begin() + source * n, z_buffer.begin() + (source + 1) * n,
-                  z_bad.begin() + j * n);
-        std::copy(lam_chunk.begin() + source * q_total, lam_chunk.begin() + (source + 1) * q_total,
-                  lam_bad.begin() + j * q_total);
-      }
-      const pace::Status redo = pace::solve_genes_chunk(
-          const_span(solve_x_fixed), n, p, design.blocks,
-          pace::Span<const double>(w_bad.data(), n * n_bad),
-          pace::Span<const double>(z_bad.data(), n * n_bad),
-          pace::Span<const double>(lam_bad.data(), q_total * n_bad), q_total, n_bad, false,
-          n_threads, user_interrupted, pace::Span<double>(beta_bad.data(), p * n_bad),
-          pace::Span<double>(u_bad.data(), q_total * n_bad),
-          pace::Span<double>(ainv_bad.data(), (p + q_total) * n_bad));
-      raise_if_failed(redo, "gene solve (double repair)");
-      for (std::int64_t j = 0; j < n_bad; ++j) {
-        const std::int64_t target = bad[static_cast<std::size_t>(j)];
-        std::copy(beta_bad.begin() + j * p, beta_bad.begin() + (j + 1) * p,
-                  chunk_beta.begin() + target * p);
-        std::copy(u_bad.begin() + j * q_total, u_bad.begin() + (j + 1) * q_total,
-                  chunk_u.begin() + target * q_total);
-        std::copy(ainv_bad.begin() + j * (p + q_total), ainv_bad.begin() + (j + 1) * (p + q_total),
-                  chunk_ainv.begin() + target * (p + q_total));
-      }
-    }
-
-    // ---- write the chunk's columns out ----
-    for (std::int64_t j = 0; j < m_chunk; ++j) {
-      const std::int64_t gene = first + j;
-      bool finite = true;
-      for (std::int64_t k = 0; k < p; ++k) {
-        const double value = chunk_beta[static_cast<std::size_t>(k + j * p)];
-        beta_out(k, gene) = value;
-        if (!std::isfinite(value)) finite = false;
-        if (last_iter) {
-          const double variance = chunk_ainv[static_cast<std::size_t>(k + j * (p + q_total))];
-          se_beta(k, gene) = std::sqrt(variance > 0 ? variance : 0.0);
-        }
-      }
-      for (std::int64_t k = 0; k < q_total; ++k) {
-        const double value = chunk_u[static_cast<std::size_t>(k + j * q_total)];
-        u_out(k, gene) = value;
-        if (!std::isfinite(value)) finite = false;
-        const double variance = chunk_ainv[static_cast<std::size_t>(p + k + j * (p + q_total))];
-        re_var(k, gene) = variance > 0 ? variance : 0.0;
-        if (last_iter) se_u(k, gene) = std::sqrt(variance > 0 ? variance : 0.0);
-      }
-      if (!finite) nan_genes.push_back(static_cast<int>(gene + 1));
-    }
-  }
+  const pace::Status status = pace::fit_pass1(
+      double_span(x1), x1_is_unit, const_span(x_fixed), const_span(solve_x_fixed), p,
+      z_holder.view, design.blocks, const_span(b_in), const_span(u_in), const_span(lam_diag),
+      gene_block(count_holder, 1), gene_block(ambient_holder, 1), double_span(offset),
+      double_span(rho), double_span(alpha), double_span(sample_weight), nb2, gaussian,
+      seed_iteration, n, q_total, n_genes_total, chunk_size, sub_genes, interior_precision,
+      last_iter, out_span(beta_out), out_span(u_out), out_span(re_var), out_span(se_beta),
+      out_span(se_u), &nan_genes, n_threads, user_interrupted);
+  raise_if_failed(status, "fit pass 1");
 
   return Rcpp::List::create(Rcpp::Named("B") = beta_out, Rcpp::Named("U") = u_out,
                             Rcpp::Named("re_var") = re_var, Rcpp::Named("se_B") = se_beta,
@@ -1560,4 +1330,210 @@ Rcpp::List pace_working_response_chunk_cpp(
   }
   return Rcpp::List::create(Rcpp::Named("z") = z, Rcpp::Named("w") = w,
                             Rcpp::Named("colsum_w") = colsum_w);
+}
+
+// The whole outer PQL iteration, run in the core (see core/irls_driver.hpp).
+//
+// This replaces the `for (it in seq_len(n_iter))` loop in
+// fit_pace_mvpql_streaming(). That loop crossed the boundary once per pass per
+// iteration -- about two hundred times on a 32-iteration fit -- and every
+// crossing allocated a fresh R copy of each full-panel matrix the pass returned
+// before R copied it into the loop's own state. Here the state stays in the
+// core and only the finished fit and its history come back.
+//
+// Everything the loop would print goes out through Rprintf as it happens, so a
+// verbose fit still streams its progress. Warnings are COLLECTED and raised
+// after the loop returns rather than from inside it: an R warning can longjmp
+// (under options(warn = 2) it becomes an error), and a longjmp out of the core
+// would skip the destructors of every buffer the loop holds. Their text and
+// their order are unchanged.
+//
+// `tau_shrinkage` is the pace::TauShrinkage enumerator as an integer, in the
+// order fit_pace_mvpql_streaming()'s argument lists the modes. A non-finite
+// `tau_max` means no cap, as .clamp_tau() read it.
+// [[Rcpp::export]]
+Rcpp::List pace_irls_driver_cpp(
+    const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed,
+    const Rcpp::NumericMatrix& solve_x_fixed, int p, const Rcpp::S4& z_design,
+    const Rcpp::List& blocks, const Rcpp::List& terms_list,
+    const Rcpp::List& cells_by_group_list, const Rcpp::List& cell_group_list,
+    const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset,
+    const Rcpp::NumericVector& sample_weight, const Rcpp::NumericMatrix& mask,
+    const Rcpp::IntegerVector& mask_index, const Rcpp::NumericMatrix& data_informed_weights,
+    const Rcpp::NumericVector& alpha_init, const Rcpp::CharacterVector& gene_names, int n_cells,
+    int q_total, int n_genes, int n_iter, int min_iter, double early_stop_tol,
+    double alpha_warmup, const std::string& alpha_warmup_label, bool nb2, bool gaussian,
+    bool zero_collapse, double alpha_max_cells, bool fast_density, int interior_precision,
+    int chunk_size, int sub_genes, double tau_max, int tau_shrinkage, double d0_min,
+    bool use_reml, bool rd_diag, bool verbose, int n_threads) {
+  CscHolder count_holder(counts);
+  CscHolder ambient_holder(ambient);
+  const CscHolder z_holder(z_design);
+  const std::int64_t n = n_cells;
+  const std::int64_t q = q_total;
+  const std::int64_t g = n_genes;
+
+  // The random-effect design, converted once for the whole fit rather than once
+  // per chunk per iteration.
+  const SolveDesign design =
+      build_solve_design(blocks, terms_list, cells_by_group_list, cell_group_list);
+
+  // The same blocks as the tau bookkeeping sees them, with the group sizes the
+  // hierarchical weights read.
+  const int n_blocks = blocks.size();
+  std::vector<std::vector<int> > group_sizes(static_cast<std::size_t>(n_blocks));
+  std::vector<pace::TauBlock> tau_blocks(static_cast<std::size_t>(n_blocks));
+  for (int b = 0; b < n_blocks; ++b) {
+    const Rcpp::List block = blocks[b];
+    pace::TauBlock& tau_block = tau_blocks[static_cast<std::size_t>(b)];
+    tau_block.col_offset = Rcpp::as<int>(block["col_offset"]);
+    tau_block.n_terms = Rcpp::as<int>(block["K_terms"]);
+    tau_block.n_groups = Rcpp::as<int>(block["K_groups"]);
+    tau_block.n_cols = Rcpp::as<int>(block["n_cols"]);
+    const Rcpp::List cells = cells_by_group_list[b];
+    std::vector<int>& sizes = group_sizes[static_cast<std::size_t>(b)];
+    sizes.reserve(static_cast<std::size_t>(cells.size()));
+    for (R_xlen_t group = 0; group < cells.size(); ++group) {
+      const Rcpp::IntegerVector rows = cells[group];
+      sizes.push_back(static_cast<int>(rows.size()));
+    }
+  }
+  // Set after every push_back is done, so no reallocation can leave one dangling.
+  for (int b = 0; b < n_blocks; ++b) {
+    const std::vector<int>& sizes = group_sizes[static_cast<std::size_t>(b)];
+    tau_blocks[static_cast<std::size_t>(b)].group_size =
+        pace::Span<const int>(sizes.data(), static_cast<std::int64_t>(sizes.size()));
+  }
+
+  Rcpp::NumericMatrix beta_out(p, g);
+  Rcpp::NumericMatrix u_out(q, g);
+  // The standard errors are filled on the last iteration only, so an unfinished
+  // fit reports NA rather than zero, which is what the R loop's
+  // matrix(NA_real_, ...) initialisation gave.
+  Rcpp::NumericMatrix se_beta(p, g);
+  Rcpp::NumericMatrix se_u(q, g);
+  std::fill(se_beta.begin(), se_beta.end(), NA_REAL);
+  std::fill(se_u.begin(), se_u.end(), NA_REAL);
+  Rcpp::NumericVector alpha(g);
+  Rcpp::NumericMatrix tau_g_array(q, g);
+  Rcpp::NumericVector tau_flat(q);
+  Rcpp::NumericVector rho(n);
+  Rcpp::NumericMatrix history_tau_flat(q, n_iter);
+  Rcpp::NumericMatrix history_alpha(g, n_iter);
+  Rcpp::NumericVector history_rel_delta(n_iter);
+  Rcpp::NumericVector history_rel_delta_mean(n_iter);
+  Rcpp::NumericVector history_n_nan_genes(n_iter);
+  Rcpp::NumericVector history_n_nonfinite(n_iter);
+  Rcpp::NumericVector history_tau_max_seen(n_iter);
+  std::int64_t iterations_run = 0;
+  bool converged = false;
+
+  std::vector<std::string> deferred_warnings;
+  pace::IrlsLoopReporter reporter;
+  reporter.message = [](const std::string& text) { Rprintf("%s", text.c_str()); };
+  reporter.warn = [&deferred_warnings](const std::string& text) {
+    deferred_warnings.push_back(text);
+  };
+  // The only message whose text is R's: it names the genes, and the gene names
+  // are the column names of the counts.
+  reporter.warn_nan_genes = [&deferred_warnings, &gene_names](std::int64_t iteration,
+                                                              pace::Span<const int> genes) {
+    std::string named;
+    const std::int64_t shown = std::min<std::int64_t>(genes.size, 5);
+    for (std::int64_t k = 0; k < shown && gene_names.size() > 0; ++k) {
+      if (!named.empty()) named += ", ";
+      named += Rcpp::as<std::string>(gene_names[genes[k] - 1]);
+    }
+    char buffer[1024];
+    std::snprintf(buffer, sizeof(buffer),
+                  "iter %lld: %lld gene(s) carry non-finite coefficients (%s%s); the fit will "
+                  "not be reported as converged.",
+                  static_cast<long long>(iteration), static_cast<long long>(genes.size),
+                  named.c_str(), genes.size > 5 ? ", ..." : "");
+    deferred_warnings.push_back(std::string(buffer));
+  };
+
+  pace::IrlsLoopInputs inputs;
+  inputs.x1 = double_span(x1);
+  inputs.x1_is_unit = x1_is_unit;
+  inputs.x_fixed = const_span(x_fixed);
+  inputs.solve_x_fixed = const_span(solve_x_fixed);
+  inputs.p = p;
+  inputs.z = z_holder.view;
+  inputs.solve_blocks = &design.blocks;
+  inputs.tau_blocks = &tau_blocks;
+  inputs.counts = gene_block(count_holder, 1);
+  inputs.ambient = gene_block(ambient_holder, 1);
+  inputs.offset = double_span(offset);
+  inputs.sample_weight = double_span(sample_weight);
+  inputs.mask = const_span(mask);
+  inputs.mask_index = int_span(mask_index);
+  inputs.n_mask_rows = mask.nrow();
+  inputs.data_informed_weights = const_span(data_informed_weights);
+  inputs.alpha_init = double_span(alpha_init);
+  inputs.n = n;
+  inputs.q = q;
+  inputs.n_genes = g;
+
+  pace::IrlsLoopOptions options;
+  options.n_iter = n_iter;
+  options.min_iter = min_iter;
+  options.early_stop_tol = early_stop_tol;
+  options.alpha_warmup = alpha_warmup;
+  options.alpha_warmup_label = alpha_warmup_label;
+  options.nb2 = nb2;
+  options.gaussian = gaussian;
+  options.zero_collapse = zero_collapse;
+  options.alpha_max_cells = alpha_max_cells;
+  options.fast_density = fast_density;
+  options.interior_precision = interior_precision;
+  options.chunk_size = chunk_size;
+  options.sub_genes = sub_genes;
+  options.tau_max = tau_max;
+  options.tau_shrinkage = static_cast<pace::TauShrinkage>(tau_shrinkage);
+  options.d0_min = d0_min;
+  options.use_reml = use_reml;
+  options.rd_diag = rd_diag;
+  options.verbose = verbose;
+  options.n_threads = n_threads;
+
+  pace::IrlsLoopOutputs outputs;
+  outputs.beta = out_span(beta_out);
+  outputs.u = out_span(u_out);
+  outputs.se_beta = out_span(se_beta);
+  outputs.se_u = out_span(se_u);
+  outputs.alpha = out_span(alpha);
+  outputs.tau_g_array = out_span(tau_g_array);
+  outputs.tau_flat = out_span(tau_flat);
+  outputs.rho = out_span(rho);
+  outputs.history_tau_flat = out_span(history_tau_flat);
+  outputs.history_alpha = out_span(history_alpha);
+  outputs.history_rel_delta = out_span(history_rel_delta);
+  outputs.history_rel_delta_mean = out_span(history_rel_delta_mean);
+  outputs.history_n_nan_genes = out_span(history_n_nan_genes);
+  outputs.history_n_nonfinite = out_span(history_n_nonfinite);
+  outputs.history_tau_max_seen = out_span(history_tau_max_seen);
+  outputs.iterations_run = &iterations_run;
+  outputs.converged = &converged;
+
+  const pace::Status status = pace::run_irls_loop(inputs, options, r_log_nbinom, r_trigamma,
+                                                  reporter, outputs, user_interrupted);
+  for (std::size_t k = 0; k < deferred_warnings.size(); ++k) {
+    Rf_warningcall(R_NilValue, "%s", deferred_warnings[k].c_str());
+  }
+  raise_if_failed(status, "IRLS loop");
+
+  return Rcpp::List::create(
+      Rcpp::Named("B") = beta_out, Rcpp::Named("U") = u_out, Rcpp::Named("se_B") = se_beta,
+      Rcpp::Named("se_U") = se_u, Rcpp::Named("alpha") = alpha,
+      Rcpp::Named("tau_g_array") = tau_g_array, Rcpp::Named("tau_flat") = tau_flat,
+      Rcpp::Named("rho") = rho, Rcpp::Named("history_tau_flat") = history_tau_flat,
+      Rcpp::Named("history_alpha") = history_alpha,
+      Rcpp::Named("history_rel_delta") = history_rel_delta,
+      Rcpp::Named("history_rel_delta_mean") = history_rel_delta_mean,
+      Rcpp::Named("history_n_nan_genes") = history_n_nan_genes,
+      Rcpp::Named("history_n_nonfinite") = history_n_nonfinite,
+      Rcpp::Named("history_tau_max_seen") = history_tau_max_seen,
+      Rcpp::Named("n_iter") = static_cast<double>(iterations_run),
+      Rcpp::Named("converged") = converged);
 }
