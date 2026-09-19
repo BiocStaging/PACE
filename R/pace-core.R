@@ -430,7 +430,7 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   df <- object@context$df
   if (is.null(gene_idx)) gene_idx <- seq_len(ncol(f$B))
 
-  ## ⛔ Count fits only. On the identity link the fitted mean is eta + offset,
+  ## Count fits only. On the identity link the fitted mean is eta + offset,
   ## not its exponential, and a Gaussian fit has no df$nCount at all -- log(NULL)
   ## is numeric(0), so mu would silently collapse to a zero-length matrix and the
   ## decomposition built on it would fail somewhere far from here, if it failed

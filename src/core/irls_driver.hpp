@@ -107,7 +107,7 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
 
 // Which prior the variance components are shrunk under.
 //
-// ⚠️ The order is the one the CALL SITE matches against -- the literal
+// IMPORTANT: the order is the one the CALL SITE matches against -- the literal
 // c("shared", "hierarchical", "adaptive", "half_cauchy") at
 // engine-streaming.R:788 -- and NOT the order the `tau_shrinkage` argument is
 // declared in, which is c("hierarchical", "shared", ...). Those two disagree in

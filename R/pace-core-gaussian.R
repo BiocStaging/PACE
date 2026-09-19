@@ -26,7 +26,7 @@
 ##                quietly: the fit would look healthy and the decomposition
 ##                built on mu would be wrong.
 ##
-## ⚠️ The random-effect formula construction below is DUPLICATED from
+## NOTE: the random-effect formula construction below is DUPLICATED from
 ## pace_fit_streaming() (R/pace-core.R, "3. fixed effects + RE spec"). That is
 ## the price of keeping the count path untouched. If you change the formula
 ## logic in one, change it in the other.
@@ -169,7 +169,7 @@ pace_fit_streaming_gaussian <- function(Y, df, types = NULL,
   for (tc in types) df[[tc]] <- K_bio[, tc]   ## re_specs formula reads these by name
 
   ## ---- 3. fixed effects + RE spec ----
-  ## ⚠️ DUPLICATED from pace_fit_streaming(); keep the two in step.
+  ## NOTE: duplicated from pace_fit_streaming(); keep the two in step.
   offset_vec <- numeric(nrow(df))             ## identity link: no offset
   X_fixed <- if (!has_cond) {
     matrix(1, nrow(df), 1, dimnames = list(NULL, "(Intercept)"))
