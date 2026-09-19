@@ -317,6 +317,17 @@ pace::GeneBlock gene_block(const CscHolder& holder, int first_gene) {
   return block;
 }
 
+// The ambient field as the core now takes it. These wrappers are the CACHED
+// path -- R has already built W %*% Y and hands the whole thing over -- so the
+// source just carries that block. The streamed path is configured in
+// pace_irls_driver_cpp(), which is the only caller that has W and Y separately.
+pace::AmbientSource cached_ambient(const CscHolder& holder, int first_gene) {
+  pace::AmbientSource source;
+  source.streamed = false;
+  source.cached = gene_block(holder, first_gene);
+  return source;
+}
+
 }  // namespace
 
 // Per-group mean and variance of the columns of a dense matrix (see
@@ -1129,7 +1140,7 @@ Rcpp::List pace_rho_pass_cpp(
   const pace::Status status = pace::rho_pass(
       double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, const_span(b_in),
       const_span(u_in), const_span(prev_b), const_span(prev_u), have_previous,
-      gene_block(count_holder, 1), gene_block(ambient_holder, 1), double_span(offset),
+      gene_block(count_holder, 1), cached_ambient(ambient_holder, 1), double_span(offset),
       double_span(rho), double_span(alpha), const_span(mask), int_span(mask_index), mask.nrow(),
       nb2, n, n_genes_total, chunk_size, out_span(num), out_span(den), &rel_delta_max,
       &rel_delta_sum, &n_finite, &n_nonfinite, out_span(tail_counts), n_threads,
@@ -1180,7 +1191,7 @@ Rcpp::List pace_dispersion_pass_cpp(
   std::int64_t n_noninteger = 0;
   const pace::Status status = pace::dispersion_pass(
       double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, const_span(b_in),
-      const_span(u_in), gene_block(count_holder, 1), gene_block(ambient_holder, 1),
+      const_span(u_in), gene_block(count_holder, 1), cached_ambient(ambient_holder, 1),
       double_span(offset), double_span(rho), nb2, gaussian, zero_collapse, max_cells,
       r_log_nbinom, fast_density, n, n_genes_total, chunk_size, out_span(alpha), &n_noninteger,
       n_threads, user_interrupted);
@@ -1254,7 +1265,7 @@ Rcpp::List pace_fit_pass1_cpp(
   const pace::Status status = pace::fit_pass1(
       double_span(x1), x1_is_unit, const_span(x_fixed), const_span(solve_x_fixed), p,
       z_holder.view, design.blocks, const_span(b_in), const_span(u_in), const_span(lam_diag),
-      gene_block(count_holder, 1), gene_block(ambient_holder, 1), double_span(offset),
+      gene_block(count_holder, 1), cached_ambient(ambient_holder, 1), double_span(offset),
       double_span(rho), double_span(alpha), double_span(sample_weight), nb2, gaussian,
       seed_iteration, n, q_total, n_genes_total, chunk_size, sub_genes, interior_precision,
       last_iter, out_span(beta_out), out_span(u_out), out_span(re_var), out_span(se_beta),
@@ -1360,7 +1371,8 @@ Rcpp::List pace_irls_driver_cpp(
     const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset,
     const Rcpp::NumericVector& sample_weight, const Rcpp::NumericMatrix& mask,
     const Rcpp::IntegerVector& mask_index, const Rcpp::NumericMatrix& data_informed_weights,
-    const Rcpp::NumericVector& alpha_init, const Rcpp::CharacterVector& gene_names, int n_cells,
+    const Rcpp::NumericVector& alpha_init, const Rcpp::CharacterVector& gene_names,
+    bool ambient_streamed, int n_cells,
     int q_total, int n_genes, int n_iter, int min_iter, double early_stop_tol,
     double alpha_warmup, const std::string& alpha_warmup_label, bool nb2, bool gaussian,
     bool zero_collapse, double alpha_max_cells, bool fast_density, int interior_precision,
@@ -1469,7 +1481,25 @@ Rcpp::List pace_irls_driver_cpp(
   inputs.solve_blocks = &design.blocks;
   inputs.tau_blocks = &tau_blocks;
   inputs.counts = gene_block(count_holder, 1);
-  inputs.ambient = gene_block(ambient_holder, 1);
+  // Cached or streamed. In streamed mode `ambient` is W (n x n) rather than the
+  // product, and each chunk's columns are computed from W and the counts as the
+  // fit walks the panel. The two give identical numbers -- a sparse product is
+  // column-independent -- and differ only in holding 5.2 GB or not at the 1.2M
+  // by 5,001 scale where this matters.
+  std::vector<int> ambient_scratch_p, ambient_scratch_i;
+  std::vector<double> ambient_scratch_x;
+  pace::CscView ambient_scratch_view;
+  if (ambient_streamed) {
+    inputs.ambient.streamed = true;
+    inputs.ambient.weights = ambient_holder.view;
+    inputs.ambient.counts = count_holder.view;
+    inputs.ambient.scratch_column_pointer = &ambient_scratch_p;
+    inputs.ambient.scratch_row_index = &ambient_scratch_i;
+    inputs.ambient.scratch_values = &ambient_scratch_x;
+    inputs.ambient.scratch_view = &ambient_scratch_view;
+  } else {
+    inputs.ambient = cached_ambient(ambient_holder, 1);
+  }
   inputs.offset = double_span(offset);
   inputs.sample_weight = double_span(sample_weight);
   inputs.mask = const_span(mask);

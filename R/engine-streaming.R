@@ -114,7 +114,21 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      ##   Set early_stop_tol = 0 to disable.
                                      early_stop_tol    = 2e-2,
                                      min_iter          = 12L,
+                                     ## "cache" builds W %*% Y once and slices it, which is right
+                                     ## while the product is small: 0.03 GB on BC, 0.12 GB on Mel.
+                                     ## "stream" recomputes each chunk's columns from W and Y
+                                     ## instead, trading a sparse product per pass for the whole
+                                     ## cache -- 5.2 GB at 1.2M cells by 5,001 genes, which is the
+                                     ## difference between fitting and paging there.
+                                     ## The CHUNKING is exact -- a sparse product is column-
+                                     ## independent -- but the product is not bit-identical to the
+                                     ## cached one: the core uses a Gustavson accumulator where
+                                     ## Matrix uses CHOLMOD, and the orderings differ at ~1e-15 an
+                                     ## entry, growing to ~1e-6 in the coefficients over a fit.
+                                     ## "cache" stays the default and the bit-identical path.
+                                     ambient_mode      = c("cache", "stream"),
                                      verbose           = TRUE) {
+  ambient_mode <- match.arg(ambient_mode)
   tau_shrinkage <- match.arg(tau_shrinkage)
   family        <- match.arg(family)
   is_gaussian   <- identical(family, "gaussian")   ## guards every Gaussian branch
@@ -287,7 +301,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## it, and the zero matrix costs nothing to carry.
   a_cache <- if (is_gaussian) methods::new("dgCMatrix", Dim = c(as.integer(n), as.integer(g_n)),
                                            p = integer(g_n + 1L), i = integer(0), x = numeric(0))
+             else if (identical(ambient_mode, "stream")) .pace_as_dgc(ambient_W)
              else .pace_as_dgc(ambient_W %*% Y)
+  if (identical(ambient_mode, "stream") && verbose)
+    cat("  [mvpql.streaming] ambient field STREAMED: the n x G product is never materialised\n")
 
   ## The fixed-effect contribution X_fixed %*% coef[, chunk], as the core builds
   ## it. When p == 1 (intercept-only under E^tech) the matrix multiply becomes a
@@ -358,6 +375,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       Y, a_cache, offset_vec, sample_weight_vec, mask_matrix, mask_index,
       if (is.null(data_informed_W)) empty_matrix else data_informed_W,
       alpha, if (is.null(colnames(Y))) character(0) else colnames(Y),
+      identical(ambient_mode, "stream"),
       n, q, g_n,
       as.integer(n_iter), as.integer(min_iter), as.numeric(early_stop_tol),
       as.numeric(alpha_warmup), format(alpha_warmup),
@@ -452,7 +470,18 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   for (cs in chk_starts) {
     gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
     eta_chk <- .eta_block(B, U, gene_idx_chk)
-    pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_cache, gene_idx_chk[1L],
+    ## In streamed mode `a_cache` holds W, not the product, so this pass has to
+    ## build its own chunk. Slicing first and multiplying gives exactly what
+    ## multiplying and slicing would -- a sparse product is column-independent --
+    ## and this runs once at the end rather than per iteration.
+    if (identical(ambient_mode, "stream")) {
+      ambient_chk <- .pace_as_dgc(a_cache %*% Y[, gene_idx_chk, drop = FALSE])
+      first_gene_chk <- 1L
+    } else {
+      ambient_chk <- a_cache
+      first_gene_chk <- gene_idx_chk[1L]
+    }
+    pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, ambient_chk, first_gene_chk,
                                            add_rho, ct_code, length(ct_levels),
                                            want_groups = TRUE, return_matrices = return_mu)
     mu_celltype_sum[, gene_idx_chk] <- pass$mu_group_sum

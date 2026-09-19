@@ -30,11 +30,64 @@
 #include <vector>
 
 #include "core_types.hpp"
+#include "sparse_product.hpp"
 #include "count_stats.hpp"
 #include "dispersion.hpp"
 #include "gene_solve.hpp"
 
 namespace pace {
+
+// Where a chunk's ambient field comes from.
+//
+// CACHED is the historical behaviour: W %*% Y is built once, in R, and every
+// pass reads a slice of it. That is the right trade while the cache is small --
+// 0.03 GB on breast cancer, 0.12 GB on melanoma.
+//
+// It stops being the right trade at scale. On a 1.2M cell cohort at the full
+// 5,001 gene panel the cache measures 5.2 GB, on top of 4.0 GB for the counts
+// and another 4.0 GB for the untransposed copy the caller still holds. That
+// combination pages on a 24 GB machine, and a fit that pages is not a fit: the
+// observed cost went from 275 s an iteration to 8,589 s, essentially all of it
+// waiting on disk.
+//
+// STREAMED recomputes each chunk's columns from W and Y instead. It costs a
+// sparse product per pass per iteration and saves the whole cache.
+//
+// The CHUNKING is exact -- a sparse product is column-independent, so a chunk's
+// columns do not depend on how the panel is cut, and this was verified against
+// Matrix across several ranges. What is NOT bit-identical is the product
+// itself: the core accumulates through a Gustavson sparse accumulator while the
+// cached path gets CHOLMOD's ordering from Matrix, and the two associate the
+// same sums differently at about 1e-15 an entry. Over a fit that grows to
+// around 1e-6 in the coefficients.
+//
+// So the modes are numerically equivalent, not identical. Cached stays the
+// default and remains the bit-identical path for the manuscript cohorts;
+// streamed is for panels where the cache does not fit, where a 1e-6 difference
+// against a run that cannot be performed is not a meaningful comparison.
+struct AmbientSource {
+  // Cached: a view of the whole n x G product, sliced per chunk.
+  GeneBlock cached;
+  // Streamed: the two operands, plus scratch reused across chunks so that the
+  // per-chunk product does not allocate. The scratch is held by POINTER, not by
+  // value, which is what lets ambient_block() take this by const reference and
+  // still write the chunk into it: the pointers are const, what they address is
+  // not. The buffers live in run_irls_loop, one set for the whole fit.
+  bool streamed = false;
+  CscView weights;      // W, n x n
+  CscView counts;       // Y, n x G
+  std::vector<int>* scratch_column_pointer = nullptr;
+  std::vector<int>* scratch_row_index = nullptr;
+  std::vector<double>* scratch_values = nullptr;
+  CscView* scratch_view = nullptr;
+};
+
+// The ambient block for genes [first_gene, first_gene + width), from whichever
+// source the caller configured. In cached mode this is a pointer offset; in
+// streamed mode it computes the product into the scratch buffers and views it.
+Status ambient_block(const AmbientSource& source, std::int64_t first_gene, std::int64_t width,
+                     int n_threads, const InterruptCheck& interrupted, GeneBlock* out);
+
 
 // One IRLS pass over every gene chunk: the working response, the float/double
 // ridge decision, the per-gene solve and the lossless NaN repair.
@@ -60,7 +113,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
                  Span<const double> solve_x_fixed, std::int64_t p, const CscView& z,
                  const std::vector<SolveBlock>& solve_blocks, Span<const double> beta_in,
                  Span<const double> u_in, Span<const double> lam_diag, const GeneBlock& counts,
-                 const GeneBlock& ambient, Span<const double> offset, Span<const double> rho,
+                 const const AmbientSource& ambient, Span<const double> offset, Span<const double> rho,
                  Span<const double> alpha, Span<const double> sample_weight, bool nb2,
                  bool gaussian, bool seed_iteration, std::int64_t n, std::int64_t q_total,
                  std::int64_t n_genes, std::int64_t chunk_size, std::int64_t sub_genes,
@@ -79,7 +132,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
 Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
                 std::int64_t p, const CscView& z, Span<const double> beta_in,
                 Span<const double> u_in, Span<const double> prev_beta, Span<const double> prev_u,
-                bool have_previous, const GeneBlock& counts, const GeneBlock& ambient,
+                bool have_previous, const GeneBlock& counts, const AmbientSource& ambient,
                 Span<const double> offset, Span<const double> rho, Span<const double> alpha,
                 Span<const double> mask, Span<const int> mask_index, std::int64_t n_mask_rows,
                 bool nb2, std::int64_t n, std::int64_t n_genes, std::int64_t chunk_size,
@@ -94,7 +147,7 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
 // which the caller warns about.
 Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
                        std::int64_t p, const CscView& z, Span<const double> beta_in,
-                       Span<const double> u_in, const GeneBlock& counts, const GeneBlock& ambient,
+                       Span<const double> u_in, const GeneBlock& counts, const AmbientSource& ambient,
                        Span<const double> offset, Span<const double> rho, bool nb2, bool gaussian,
                        bool zero_collapse, double max_cells, LogDensity density, bool fast_density,
                        std::int64_t n, std::int64_t n_genes, std::int64_t chunk_size,
@@ -146,7 +199,7 @@ struct IrlsLoopInputs {
   const std::vector<SolveBlock>* solve_blocks = nullptr;
   const std::vector<TauBlock>* tau_blocks = nullptr;
   GeneBlock counts;                   // the n x G counts, read one gene at a time
-  GeneBlock ambient;                  // the n x G E^tech field, likewise
+  AmbientSource ambient;              // the n x G E^tech field, cached or streamed
   Span<const double> offset;          // n entries
   Span<const double> sample_weight;   // n entries, or empty
   Span<const double> mask;            // the anchor mask, or empty

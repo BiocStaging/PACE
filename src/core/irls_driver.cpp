@@ -123,7 +123,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
                  Span<const double> solve_x_fixed, std::int64_t p, const CscView& z,
                  const std::vector<SolveBlock>& solve_blocks, Span<const double> beta_in,
                  Span<const double> u_in, Span<const double> lam_diag, const GeneBlock& counts,
-                 const GeneBlock& ambient, Span<const double> offset, Span<const double> rho,
+                 const const AmbientSource& ambient, Span<const double> offset, Span<const double> rho,
                  Span<const double> alpha, Span<const double> sample_weight, bool nb2,
                  bool gaussian, bool seed_iteration, std::int64_t n, std::int64_t q_total,
                  std::int64_t n_genes, std::int64_t chunk_size, std::int64_t sub_genes,
@@ -145,6 +145,15 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
 
   for (std::int64_t first = 0; first < n_genes; first += width) {
     const std::int64_t m_chunk = std::min(width, n_genes - first);
+    // One ambient block per chunk, from the cache or recomputed from W and Y.
+    // Sub-blocks below slice THIS block, so a streamed chunk is built once per
+    // pass rather than once per sub-block.
+    GeneBlock chunk_ambient;
+    {
+      const Status ambient_status =
+          ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
+      if (!ambient_status.is_ok()) return ambient_status;
+    }
     for (std::int64_t j = 0; j < m_chunk; ++j) {
       chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
     }
@@ -164,7 +173,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
         eta_span = Span<const double>(eta_scratch.data(), n * len);
       }
       const Status status = working_response(
-          eta_span, shifted_block(counts, first + start), shifted_block(ambient, first + start),
+          eta_span, shifted_block(counts, first + start), shifted_block(chunk_ambient, start),
           offset, rho, Span<const double>(alpha.data + first + start, len), sample_weight, nb2,
           gaussian, seed_iteration, n, len,
           Span<double>(z_buffer.data() + start * n, n * len),
@@ -301,7 +310,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
 Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
                 std::int64_t p, const CscView& z, Span<const double> beta_in,
                 Span<const double> u_in, Span<const double> prev_beta, Span<const double> prev_u,
-                bool have_previous, const GeneBlock& counts, const GeneBlock& ambient,
+                bool have_previous, const GeneBlock& counts, const AmbientSource& ambient,
                 Span<const double> offset, Span<const double> rho, Span<const double> alpha,
                 Span<const double> mask, Span<const int> mask_index, std::int64_t n_mask_rows,
                 bool nb2, std::int64_t n, std::int64_t n_genes, std::int64_t chunk_size,
@@ -326,6 +335,15 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
 
   for (std::int64_t first = 0; first < n_genes; first += width) {
     const std::int64_t m_chunk = std::min(width, n_genes - first);
+    // One ambient block per chunk, from the cache or recomputed from W and Y.
+    // Sub-blocks below slice THIS block, so a streamed chunk is built once per
+    // pass rather than once per sub-block.
+    GeneBlock chunk_ambient;
+    {
+      const Status ambient_status =
+          ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
+      if (!ambient_status.is_ok()) return ambient_status;
+    }
     for (std::int64_t j = 0; j < m_chunk; ++j) {
       chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
     }
@@ -341,7 +359,7 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
     status = rho_accumulate(
         Span<const double>(eta.data(), n * m_chunk),
         have_previous ? Span<const double>(previous_eta.data(), n * m_chunk) : empty_doubles(),
-        shifted_block(counts, first), shifted_block(ambient, first), offset, rho,
+        shifted_block(counts, first), chunk_ambient, offset, rho,
         Span<const double>(alpha.data + first, m_chunk), mask, mask_index, n_mask_rows, nb2, false,
         !have_previous, n, m_chunk, num, den, rel_delta_max, rel_delta_sum, n_finite, n_nonfinite,
         tail_counts, n_threads, interrupted);
@@ -352,7 +370,7 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
 
 Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
                        std::int64_t p, const CscView& z, Span<const double> beta_in,
-                       Span<const double> u_in, const GeneBlock& counts, const GeneBlock& ambient,
+                       Span<const double> u_in, const GeneBlock& counts, const AmbientSource& ambient,
                        Span<const double> offset, Span<const double> rho, bool nb2, bool gaussian,
                        bool zero_collapse, double max_cells, LogDensity density, bool fast_density,
                        std::int64_t n, std::int64_t n_genes, std::int64_t chunk_size,
@@ -366,6 +384,15 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
 
   for (std::int64_t first = 0; first < n_genes; first += width) {
     const std::int64_t m_chunk = std::min(width, n_genes - first);
+    // One ambient block per chunk, from the cache or recomputed from W and Y.
+    // Sub-blocks below slice THIS block, so a streamed chunk is built once per
+    // pass rather than once per sub-block.
+    GeneBlock chunk_ambient;
+    {
+      const Status ambient_status =
+          ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
+      if (!ambient_status.is_ok()) return ambient_status;
+    }
     for (std::int64_t j = 0; j < m_chunk; ++j) {
       chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
     }
@@ -388,7 +415,7 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     std::int64_t chunk_noninteger = 0;
     const Status status = dispersion_chunk(
         Span<const double>(eta.data(), n * m_chunk), shifted_block(counts, first),
-        shifted_block(ambient, first), offset, rho, nb2, zero_collapse, max_cells, density,
+        chunk_ambient, offset, rho, nb2, zero_collapse, max_cells, density,
         fast_density, n, m_chunk, Span<double>(alpha.data + first, m_chunk), &chunk_noninteger,
         n_threads, interrupted);
     if (!status.is_ok()) return status;
@@ -438,10 +465,16 @@ Status contamination_row_sums(const IrlsLoopInputs& inputs, const IrlsLoopOption
         Span<const int>(chunk_genes.data(), m_chunk), n, n_genes,
         Span<double>(eta.data(), n * m_chunk), options.n_threads, interrupted);
     if (!eta_status.is_ok()) return eta_status;
+    GeneBlock chunk_ambient;
+    {
+      const Status ambient_status = ambient_block(inputs.ambient, first, m_chunk,
+                                                  options.n_threads, interrupted, &chunk_ambient);
+      if (!ambient_status.is_ok()) return ambient_status;
+    }
     bool any_nonzero = false;
     const Status status = final_pass_statistics(
         Span<const double>(eta.data(), n * m_chunk), n, m_chunk, inputs.offset,
-        shifted_block(inputs.ambient, first),
+        chunk_ambient,
         Span<const double>(rho.data(), static_cast<std::int64_t>(rho.size())),
         Span<const int>(one_group.data(), n), 1, empty_output(), empty_output(),
         Span<double>(mu_column_sum.data(), m_chunk), Span<double>(chunk_spill.data(), n),
@@ -956,6 +989,38 @@ Status run_irls_loop(const IrlsLoopInputs& inputs, const IrlsLoopOptions& option
   for (std::int64_t i = 0; i < n; ++i) outputs.rho[i] = rho[static_cast<std::size_t>(i)];
   if (outputs.iterations_run != nullptr) *outputs.iterations_run = iterations_run;
   if (outputs.converged != nullptr) *outputs.converged = converged;
+  return Status::success();
+}
+
+Status ambient_block(const AmbientSource& source, std::int64_t first_gene, std::int64_t width,
+                     int n_threads, const InterruptCheck& interrupted, GeneBlock* out) {
+  if (!source.streamed) {
+    // A slice of the cache: the block carries the whole view and an offset, so
+    // there is nothing to compute and nothing to copy.
+    *out = source.cached;
+    out->first_gene = source.cached.first_gene + first_gene;
+    return Status::success();
+  }
+  const Status status = sparse_product_csc(
+      source.weights, source.counts, first_gene, width, *source.scratch_column_pointer,
+      *source.scratch_row_index, *source.scratch_values, n_threads, interrupted);
+  if (!status.is_ok()) return status;
+
+  // The scratch holds exactly this chunk's columns, numbered from zero, so the
+  // block's offset is zero rather than first_gene.
+  source.scratch_view->column_pointer =
+      Span<const int>(source.scratch_column_pointer->data(),
+                      static_cast<std::int64_t>(source.scratch_column_pointer->size()));
+  source.scratch_view->row_index =
+      Span<const int>(source.scratch_row_index->data(),
+                      static_cast<std::int64_t>(source.scratch_row_index->size()));
+  source.scratch_view->values =
+      Span<const double>(source.scratch_values->data(),
+                         static_cast<std::int64_t>(source.scratch_values->size()));
+  source.scratch_view->n_rows = source.weights.n_rows;
+  source.scratch_view->n_cols = width;
+  out->matrix = *source.scratch_view;
+  out->first_gene = 0;
   return Status::success();
 }
 

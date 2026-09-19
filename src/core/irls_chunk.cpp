@@ -303,7 +303,14 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const
             expand_column_range(ambient, j, lo, hi, ambient_slice);
             const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
             const double alpha_gene = alpha[j];
-            const std::int64_t mask_column = ambient.first_gene + j;
+            // counts.first_gene, NOT ambient.first_gene. Both are the global gene
+            // index when the ambient field is a slice of a cached n x G product,
+            // which is why using either worked. They are not the same thing when
+            // the ambient block is built per chunk: that block is chunk-local and
+            // starts at zero, so deriving the mask column from it reads the wrong
+            // anchors for every chunk after the first. The counts block is always
+            // a slice of the full panel, so its offset is the global index.
+            const std::int64_t mask_column = counts.first_gene + j;
             for (std::int64_t i = lo; i < hi; ++i) {
               const std::size_t slot = static_cast<std::size_t>(i - lo);
               const double ambient_value = ambient_slice[slot];
@@ -343,7 +350,7 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const
     const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
     const double* prev_column = have_previous ? prev_eta.data + j * n : nullptr;
     const double alpha_gene = alpha[j];
-    const std::int64_t mask_column = ambient.first_gene + j;
+    const std::int64_t mask_column = counts.first_gene + j;   // see the note in the parallel path
     for (std::int64_t i = 0; i < n; ++i) {
       const double ambient_value = ambient_column[static_cast<std::size_t>(i)];
       double weighted_ambient = rho_weighted_ambient(

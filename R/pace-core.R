@@ -489,7 +489,11 @@ pace_fit_streaming <- function(Y, df, types = NULL,
                                ## Upper bound on the variance components, passed to the fitter.
                                ## A binding cap means the term is identified only by the ridge.
                                tau_max = 100,
+                               ## "stream" avoids materialising the n x G ambient product; see
+                               ## fit_pace_mvpql_streaming(). Identical numbers, less memory.
+                               ambient_mode = c("cache", "stream"),
                                verbose = TRUE) {
+  ambient_mode <- match.arg(ambient_mode)
   contamination <- match.arg(contamination)
   dispersion    <- match.arg(dispersion)
   image_re      <- match.arg(image_re)
@@ -647,7 +651,7 @@ pace_fit_streaming <- function(Y, df, types = NULL,
       early_stop_tol = early_stop_tol,
       min_iter = as.integer(min_iter),
       tau_max = tau_max,
-      return_mu = return_mu, verbose = verbose)
+      return_mu = return_mu, ambient_mode = ambient_mode, verbose = verbose)
   } else {
     ## contamination == "none": no ambient field; dense oracle (bleed_percell = FALSE).
     ## The dense oracle solver reads a dense Y; it is only reachable on targeted

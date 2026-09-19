@@ -845,8 +845,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // pace_irls_driver_cpp
-Rcpp::List pace_irls_driver_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, const Rcpp::NumericMatrix& solve_x_fixed, int p, const Rcpp::S4& z_design, const Rcpp::List& blocks, const Rcpp::List& terms_list, const Rcpp::List& cells_by_group_list, const Rcpp::List& cell_group_list, const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& sample_weight, const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, const Rcpp::NumericMatrix& data_informed_weights, const Rcpp::NumericVector& alpha_init, const Rcpp::CharacterVector& gene_names, int n_cells, int q_total, int n_genes, int n_iter, int min_iter, double early_stop_tol, double alpha_warmup, const std::string& alpha_warmup_label, bool nb2, bool gaussian, bool zero_collapse, double alpha_max_cells, bool fast_density, int interior_precision, int chunk_size, int sub_genes, double tau_max, int tau_shrinkage, double d0_min, bool use_reml, bool rd_diag, bool verbose, int n_threads);
-RcppExport SEXP _PACE_pace_irls_driver_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP solve_x_fixedSEXP, SEXP pSEXP, SEXP z_designSEXP, SEXP blocksSEXP, SEXP terms_listSEXP, SEXP cells_by_group_listSEXP, SEXP cell_group_listSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP offsetSEXP, SEXP sample_weightSEXP, SEXP maskSEXP, SEXP mask_indexSEXP, SEXP data_informed_weightsSEXP, SEXP alpha_initSEXP, SEXP gene_namesSEXP, SEXP n_cellsSEXP, SEXP q_totalSEXP, SEXP n_genesSEXP, SEXP n_iterSEXP, SEXP min_iterSEXP, SEXP early_stop_tolSEXP, SEXP alpha_warmupSEXP, SEXP alpha_warmup_labelSEXP, SEXP nb2SEXP, SEXP gaussianSEXP, SEXP zero_collapseSEXP, SEXP alpha_max_cellsSEXP, SEXP fast_densitySEXP, SEXP interior_precisionSEXP, SEXP chunk_sizeSEXP, SEXP sub_genesSEXP, SEXP tau_maxSEXP, SEXP tau_shrinkageSEXP, SEXP d0_minSEXP, SEXP use_remlSEXP, SEXP rd_diagSEXP, SEXP verboseSEXP, SEXP n_threadsSEXP) {
+Rcpp::List pace_irls_driver_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, const Rcpp::NumericMatrix& solve_x_fixed, int p, const Rcpp::S4& z_design, const Rcpp::List& blocks, const Rcpp::List& terms_list, const Rcpp::List& cells_by_group_list, const Rcpp::List& cell_group_list, const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& sample_weight, const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, const Rcpp::NumericMatrix& data_informed_weights, const Rcpp::NumericVector& alpha_init, const Rcpp::CharacterVector& gene_names, bool ambient_streamed, int n_cells, int q_total, int n_genes, int n_iter, int min_iter, double early_stop_tol, double alpha_warmup, const std::string& alpha_warmup_label, bool nb2, bool gaussian, bool zero_collapse, double alpha_max_cells, bool fast_density, int interior_precision, int chunk_size, int sub_genes, double tau_max, int tau_shrinkage, double d0_min, bool use_reml, bool rd_diag, bool verbose, int n_threads);
+RcppExport SEXP _PACE_pace_irls_driver_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP solve_x_fixedSEXP, SEXP pSEXP, SEXP z_designSEXP, SEXP blocksSEXP, SEXP terms_listSEXP, SEXP cells_by_group_listSEXP, SEXP cell_group_listSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP offsetSEXP, SEXP sample_weightSEXP, SEXP maskSEXP, SEXP mask_indexSEXP, SEXP data_informed_weightsSEXP, SEXP alpha_initSEXP, SEXP gene_namesSEXP, SEXP ambient_streamedSEXP, SEXP n_cellsSEXP, SEXP q_totalSEXP, SEXP n_genesSEXP, SEXP n_iterSEXP, SEXP min_iterSEXP, SEXP early_stop_tolSEXP, SEXP alpha_warmupSEXP, SEXP alpha_warmup_labelSEXP, SEXP nb2SEXP, SEXP gaussianSEXP, SEXP zero_collapseSEXP, SEXP alpha_max_cellsSEXP, SEXP fast_densitySEXP, SEXP interior_precisionSEXP, SEXP chunk_sizeSEXP, SEXP sub_genesSEXP, SEXP tau_maxSEXP, SEXP tau_shrinkageSEXP, SEXP d0_minSEXP, SEXP use_remlSEXP, SEXP rd_diagSEXP, SEXP verboseSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -869,6 +869,7 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type data_informed_weights(data_informed_weightsSEXP);
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type alpha_init(alpha_initSEXP);
     Rcpp::traits::input_parameter< const Rcpp::CharacterVector& >::type gene_names(gene_namesSEXP);
+    Rcpp::traits::input_parameter< bool >::type ambient_streamed(ambient_streamedSEXP);
     Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
     Rcpp::traits::input_parameter< int >::type q_total(q_totalSEXP);
     Rcpp::traits::input_parameter< int >::type n_genes(n_genesSEXP);
@@ -892,7 +893,7 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< bool >::type rd_diag(rd_diagSEXP);
     Rcpp::traits::input_parameter< bool >::type verbose(verboseSEXP);
     Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_irls_driver_cpp(x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, counts, ambient, offset, sample_weight, mask, mask_index, data_informed_weights, alpha_init, gene_names, n_cells, q_total, n_genes, n_iter, min_iter, early_stop_tol, alpha_warmup, alpha_warmup_label, nb2, gaussian, zero_collapse, alpha_max_cells, fast_density, interior_precision, chunk_size, sub_genes, tau_max, tau_shrinkage, d0_min, use_reml, rd_diag, verbose, n_threads));
+    rcpp_result_gen = Rcpp::wrap(pace_irls_driver_cpp(x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, counts, ambient, offset, sample_weight, mask, mask_index, data_informed_weights, alpha_init, gene_names, ambient_streamed, n_cells, q_total, n_genes, n_iter, min_iter, early_stop_tol, alpha_warmup, alpha_warmup_label, nb2, gaussian, zero_collapse, alpha_max_cells, fast_density, interior_precision, chunk_size, sub_genes, tau_max, tau_shrinkage, d0_min, use_reml, rd_diag, verbose, n_threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -959,7 +960,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_dispersion_pass_cpp", (DL_FUNC) &_PACE_pace_dispersion_pass_cpp, 19},
     {"_PACE_pace_fit_pass1_cpp", (DL_FUNC) &_PACE_pace_fit_pass1_cpp, 28},
     {"_PACE_pace_working_response_chunk_cpp", (DL_FUNC) &_PACE_pace_working_response_chunk_cpp, 22},
-    {"_PACE_pace_irls_driver_cpp", (DL_FUNC) &_PACE_pace_irls_driver_cpp, 42},
+    {"_PACE_pace_irls_driver_cpp", (DL_FUNC) &_PACE_pace_irls_driver_cpp, 43},
     {"_PACE_pace_random_design_block_cpp", (DL_FUNC) &_PACE_pace_random_design_block_cpp, 3},
     {NULL, NULL, 0}
 };

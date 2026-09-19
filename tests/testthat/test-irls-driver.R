@@ -120,3 +120,40 @@ test_that("the Gaussian family solves its interior in double precision", {
   expect_false(any(grepl("nan-guard", chatter, fixed = TRUE)))
   expect_true(all(is.finite(fit$U)))
 })
+
+test_that("the streamed ambient field agrees with the cached one", {
+  # "stream" recomputes each chunk's ambient columns from W and Y rather than
+  # slicing a cached n x G product, which is what makes the full Xenium 5K panel
+  # fit in memory at 1.2M cells. The two are numerically equivalent but NOT
+  # bit-identical: the core accumulates the product through a Gustavson sparse
+  # accumulator where Matrix uses CHOLMOD, and the two associate the same sums
+  # differently at about 1e-15 an entry.
+  #
+  # This once differed by 2.13 in U, not 1e-6, because rho_accumulate derived
+  # the anchor mask's column from the AMBIENT block's gene offset. That offset
+  # is the global gene index only while the block is a slice of the full panel;
+  # a per-chunk block starts at zero, so every chunk after the first read the
+  # wrong anchors. The offset now comes from the counts block, which is a slice
+  # of the full panel in both modes.
+  skip_if_not_installed("SpatialExperiment")
+  path <- system.file("extdata", "bc_xenium_subset.rds", package = "PACE")
+  skip_if(path == "", "example dataset not installed")
+  spe <- readRDS(path)
+
+  fit_in <- function(mode) {
+    set.seed(1)
+    paceModel(spe, celltype_col = "cellType", contamination = "percell_hc",
+              dispersion = "nb1", n_iter = 5L, min_iter = 3L, threads = 2L,
+              ambient_mode = mode, verbose = FALSE)@fit
+  }
+  cached <- fit_in("cache")
+  streamed <- fit_in("stream")
+
+  expect_equal(streamed$U, cached$U, tolerance = 1e-4)
+  expect_equal(streamed$B, cached$B, tolerance = 1e-4)
+  expect_equal(streamed$percell_bleed_rho, cached$percell_bleed_rho, tolerance = 1e-4)
+  expect_identical(streamed$n_iter, cached$n_iter)
+  # The mask bug moved U by 2.13, so a tolerance that loose would have caught it
+  # while still passing on the accumulation-order difference.
+  expect_lt(max(abs(streamed$U - cached$U)), 1e-3)
+})
