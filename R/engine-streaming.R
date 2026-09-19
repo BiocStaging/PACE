@@ -36,6 +36,15 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      re               = NULL,
                                      offset_vec       = NULL,
                                      n_iter           = 16, tol = 5e-3,
+                                     ## ---- Observation family ----
+                                     ## "nb"       : negative binomial with a log link, the canonical
+                                     ##              count path, bit-for-bit unchanged from before.
+                                     ## "gaussian" : Gaussian with an IDENTITY link, for continuous
+                                     ##              intensities such as IMC protein. Working response
+                                     ##              z = y and per-gene constant weight w = 1/sigma2_g.
+                                     ##              Always called with contamination "none": no
+                                     ##              ambient field, no rho, no anchors.
+                                     family           = c("nb", "gaussian"),
                                      disp_model       = c("nb1", "nb2"),
                                      tau_shrinkage    = c("hierarchical", "shared",
                                                           "adaptive", "half_cauchy"),
@@ -116,6 +125,8 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      fuse_rho          = FALSE,
                                      verbose           = TRUE) {
   tau_shrinkage <- match.arg(tau_shrinkage)
+  family        <- match.arg(family)
+  is_gaussian   <- identical(family, "gaussian")   ## guards every Gaussian branch
   disp_model    <- match.arg(disp_model)
   if (isTRUE(return_mu))
     warning("`return_mu` is deprecated: the fit stores the per-cell-type statistics the ",
@@ -350,7 +361,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
         x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, X_fixed, p, Z,
         re$blocks, re$X_terms_list, re$cells_by_grp_list, re$cell_grp_list,
         B, U, lam_diag_mat, Y, a_cache, offset_vec, add_rho, alpha, sample_weight_vec,
-        disp_nb2, it == 1L, n, as.integer(chunk_size), as.integer(sub_genes),
+        disp_nb2, is_gaussian, it == 1L, n, as.integer(chunk_size), as.integer(sub_genes),
         as.integer(interior_precision), last_iter, .pace_thread_count(n_threads))
       B      <- pass1$B
       U      <- pass1$U
@@ -399,7 +410,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
           if (it == 1L || is.null(eta_chk)) empty_matrix else eta_chk,
           x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, B, Z, U,
           as.integer(gene_idx_chk), Y, a_cache, gene_idx_chk[1L], offset_vec, add_rho,
-          alpha[gene_idx_chk], sample_weight_vec, disp_nb2, it == 1L, n,
+          alpha[gene_idx_chk], sample_weight_vec, disp_nb2, is_gaussian, it == 1L, n,
           as.integer(sub_genes), .pace_thread_count(n_threads))
         z_chk    <- working$z
         w_chk    <- working$w

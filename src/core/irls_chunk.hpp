@@ -32,6 +32,26 @@ namespace pace {
 // statistic the float/double gate reads; it is per gene, so it is unaffected by
 // how the caller splits the chunk.
 //
+// With `gaussian` the family is instead Gaussian with the IDENTITY link, for
+// continuous intensities such as IMC protein. dmu/deta is then 1, so
+//
+//   z = eta + (y - mu) (deta/dmu) = eta + (y - mu) = y
+//   w = (dmu/deta)^2 / Var(y) = 1 / sigma2_g
+//
+// i.e. the working response is the raw intensity, independent of the current
+// fit, and the weight is CONSTANT across the cells of a gene. There is no
+// ambient term: this path is only ever reached with contamination "none", the
+// contamination having been removed beforehand by the ambient field. `eta`,
+// `ambient`, `rho`, `offset`, `nb2` and `seed_iteration` are all unused, and
+// `alpha` carries sigma2_g rather than the NB alpha -- the same substitution
+// the R engine makes when it returns `alpha = sigma2` on this path.
+//
+// Two consequences worth naming, because they are what make the Gaussian path
+// cheap: the mean converges in ONE inner solve (z does not depend on the fit),
+// so the outer loop only iterates the tau and sigma2 EM updates; and since w is
+// a per-gene scalar, X'WX = (1/sigma2_g) X'X and X'Wz = (1/sigma2_g) X'Y both
+// have a core that does not change between iterations.
+//
 // Shapes: `eta` is n * n_genes column-major, or empty at the seed iteration,
 // where `ambient` is ignored; `offset` and `rho` have n entries; `alpha` has
 // n_genes; `sample_weight` has n entries or is empty; `z` and `w` are
@@ -39,7 +59,8 @@ namespace pace {
 Status working_response(Span<const double> eta, const GeneBlock& counts,
                         const GeneBlock& ambient, Span<const double> offset,
                         Span<const double> rho, Span<const double> alpha,
-                        Span<const double> sample_weight, bool nb2, bool seed_iteration,
+                        Span<const double> sample_weight, bool nb2, bool gaussian,
+                        bool seed_iteration,
                         std::int64_t n, std::int64_t n_genes, Span<double> z, Span<double> w,
                         Span<double> colsum_w, int n_threads, const InterruptCheck& interrupted);
 

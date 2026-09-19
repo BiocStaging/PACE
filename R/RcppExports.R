@@ -89,8 +89,8 @@ pace_all_finite_cpp <- function(values) {
     .Call(`_PACE_pace_all_finite_cpp`, values)
 }
 
-pace_working_response_cpp <- function(eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, n_threads) {
-    .Call(`_PACE_pace_working_response_cpp`, eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, n_threads)
+pace_working_response_cpp <- function(eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, n_threads) {
+    .Call(`_PACE_pace_working_response_cpp`, eta, counts, ambient, first_gene, n_genes, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, n_threads)
 }
 
 pace_rho_accumulate_cpp <- function(eta, prev_eta, counts, ambient, first_gene, offset, rho, alpha, mask, mask_index, num_in, den_in, nb2, seed_iteration, seed_previous, n_cells, n_genes_in, want_tail_counts, n_threads) {
@@ -181,11 +181,11 @@ pace_dispersion_pass_cpp <- function(x1, x1_is_unit, x_fixed, p, z_design, b_in,
     .Call(`_PACE_pace_dispersion_pass_cpp`, x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads)
 }
 
-pace_fit_pass1_cpp <- function(x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, b_in, u_in, lam_diag, counts, ambient, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, chunk_size, sub_genes, interior_precision, last_iter, n_threads) {
-    .Call(`_PACE_pace_fit_pass1_cpp`, x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, b_in, u_in, lam_diag, counts, ambient, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, chunk_size, sub_genes, interior_precision, last_iter, n_threads)
+pace_fit_pass1_cpp <- function(x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, b_in, u_in, lam_diag, counts, ambient, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, chunk_size, sub_genes, interior_precision, last_iter, n_threads) {
+    .Call(`_PACE_pace_fit_pass1_cpp`, x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, b_in, u_in, lam_diag, counts, ambient, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, chunk_size, sub_genes, interior_precision, last_iter, n_threads)
 }
 
-pace_working_response_chunk_cpp <- function(eta_chunk, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, counts, ambient, first_gene, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, sub_genes, n_threads) {
-    .Call(`_PACE_pace_working_response_chunk_cpp`, eta_chunk, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, counts, ambient, first_gene, offset, rho, alpha, sample_weight, nb2, seed_iteration, n_cells, sub_genes, n_threads)
+pace_working_response_chunk_cpp <- function(eta_chunk, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, counts, ambient, first_gene, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, sub_genes, n_threads) {
+    .Call(`_PACE_pace_working_response_chunk_cpp`, eta_chunk, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, counts, ambient, first_gene, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, sub_genes, n_threads)
 }
 

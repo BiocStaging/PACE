@@ -678,7 +678,8 @@ Rcpp::List pace_working_response_cpp(const Rcpp::NumericMatrix& eta, const Rcpp:
                                      const Rcpp::NumericVector& rho,
                                      const Rcpp::NumericVector& alpha,
                                      const Rcpp::NumericVector& sample_weight, bool nb2,
-                                     bool seed_iteration, int n_cells, int n_threads) {
+                                     bool gaussian, bool seed_iteration, int n_cells,
+                                     int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
   Rcpp::NumericMatrix z(n_cells, n_genes);
@@ -687,8 +688,8 @@ Rcpp::List pace_working_response_cpp(const Rcpp::NumericMatrix& eta, const Rcpp:
   const pace::Status status = pace::working_response(
       seed_iteration ? pace::Span<const double>() : const_span(eta), gene_block(count_holder, first_gene),
       gene_block(ambient_holder, first_gene), double_span(offset), double_span(rho),
-      double_span(alpha), double_span(sample_weight), nb2, seed_iteration, n_cells, n_genes,
-      out_span(z), out_span(w), out_span(colsum_w), n_threads, user_interrupted);
+      double_span(alpha), double_span(sample_weight), nb2, gaussian, seed_iteration, n_cells,
+      n_genes, out_span(z), out_span(w), out_span(colsum_w), n_threads, user_interrupted);
   raise_if_failed(status, "working response");
   return Rcpp::List::create(Rcpp::Named("z") = z, Rcpp::Named("w") = w,
                             Rcpp::Named("colsum_w") = colsum_w);
@@ -1280,8 +1281,8 @@ Rcpp::List pace_fit_pass1_cpp(
     const Rcpp::NumericMatrix& lam_diag, const Rcpp::S4& counts, const Rcpp::S4& ambient,
     const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho,
     const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2,
-    bool seed_iteration, int n_cells, int chunk_size, int sub_genes, int interior_precision,
-    bool last_iter, int n_threads) {
+    bool gaussian, bool seed_iteration, int n_cells, int chunk_size, int sub_genes,
+    int interior_precision, bool last_iter, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
   const std::int64_t n = n_cells;
@@ -1345,7 +1346,7 @@ Rcpp::List pace_fit_pass1_cpp(
           eta_span, gene_block(count_holder, static_cast<int>(first + start) + 1),
           gene_block(ambient_holder, static_cast<int>(first + start) + 1), double_span(offset),
           double_span(rho), pace::Span<const double>(alpha.begin() + first + start, len),
-          double_span(sample_weight), nb2, seed_iteration, n, len,
+          double_span(sample_weight), nb2, gaussian, seed_iteration, n, len,
           pace::Span<double>(z_buffer.data() + start * n, n * len),
           pace::Span<double>(w_buffer.data() + start * n, n * len),
           pace::Span<double>(colsum_w.data() + start, len), n_threads, user_interrupted);
@@ -1477,7 +1478,7 @@ Rcpp::List pace_working_response_chunk_cpp(
     const Rcpp::S4& counts, const Rcpp::S4& ambient, int first_gene,
     const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho,
     const Rcpp::NumericVector& alpha, const Rcpp::NumericVector& sample_weight, bool nb2,
-    bool seed_iteration, int n_cells, int sub_genes, int n_threads) {
+    bool gaussian, bool seed_iteration, int n_cells, int sub_genes, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
 
@@ -1524,7 +1525,7 @@ Rcpp::List pace_working_response_chunk_cpp(
         eta_span, gene_block(count_holder, first_gene + static_cast<int>(start)),
         gene_block(ambient_holder, first_gene + static_cast<int>(start)), double_span(offset),
         double_span(rho), pace::Span<const double>(alpha.begin() + start, len),
-        double_span(sample_weight), nb2, seed_iteration, n, len,
+        double_span(sample_weight), nb2, gaussian, seed_iteration, n, len,
         pace::Span<double>(z.begin() + start * n, n * len),
         pace::Span<double>(w.begin() + start * n, n * len),
         pace::Span<double>(colsum_w.begin() + start, len), n_threads, user_interrupted);

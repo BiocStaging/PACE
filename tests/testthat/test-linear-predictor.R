@@ -89,7 +89,8 @@ test_that("the chunk working response does not depend on the sub-block width", {
   genes <- seq_len(n_genes)
   arguments <- list(matrix(0, 0, 0), numeric(0), TRUE, matrix(0, 0, 0), p, B, Z, U,
                     as.integer(genes), counts, ambient, 1L, stats::rnorm(n),
-                    runif(n), runif(n_genes, 0.1, 2), numeric(0), FALSE, FALSE, n)
+                    runif(n), runif(n_genes, 0.1, 2), numeric(0), FALSE, FALSE, FALSE, n)
+  ##                                    sample_weight  nb2  gaussian  seed_iteration
   ## Sub-blocking is a memory strategy: every width must give the same answer.
   reference <- do.call(pace_working_response_chunk_cpp, c(arguments, list(n_genes, 1L)))
   for (sub_genes in c(1L, 2L, 3L, 5L, n_genes)) {
@@ -101,4 +102,64 @@ test_that("the chunk working response does not depend on the sub-block width", {
       expect_equal(got$colsum_w, reference$colsum_w, tolerance = 1e-12)
     }
   }
+})
+
+
+test_that("the Gaussian working response is z = y and a per-gene constant weight", {
+  skip_if_not_installed("Matrix")
+  set.seed(11)
+  n <- 200L; q <- 5L; p <- 1L; n_genes <- 6L
+  ## Continuous intensities, not counts: the Gaussian path is for IMC protein.
+  dense <- matrix(abs(stats::rnorm(n * n_genes, mean = 2)), n, n_genes)
+  counts <- methods::as(methods::as(dense, "Matrix"), "CsparseMatrix")
+  ambient <- methods::as(Matrix::rsparsematrix(n, n_genes, density = 0.3,
+                                               rand.x = function(k) abs(stats::rnorm(k))),
+                         "CsparseMatrix")
+  Z <- methods::as(Matrix::rsparsematrix(n, q, density = 0.3, rand.x = stats::rnorm),
+                   "CsparseMatrix")
+  B <- matrix(stats::rnorm(p * n_genes), p, n_genes)
+  U <- matrix(stats::rnorm(q * n_genes), q, n_genes)
+  sigma2 <- runif(n_genes, 0.1, 2)
+  offset <- stats::rnorm(n)
+  rho <- runif(n)
+
+  got <- pace_working_response_chunk_cpp(
+    matrix(0, 0, 0), numeric(0), TRUE, matrix(0, 0, 0), p, B, Z, U,
+    seq_len(n_genes), counts, ambient, 1L, offset, rho, sigma2, numeric(0),
+    FALSE, TRUE, FALSE, n, n_genes, 1L)
+
+  ## z is the raw intensity: it does not depend on the fit, the offset or rho.
+  expect_equal(got$z, dense, tolerance = 0)
+  ## w is 1/sigma2_g, the same value for every cell of a gene.
+  expect_equal(got$w, matrix(rep(1 / sigma2, each = n), n, n_genes), tolerance = 0)
+  expect_equal(got$colsum_w, n / sigma2, tolerance = 1e-12)
+
+  ## Neither eta, the offset, rho nor the ambient block may reach the answer.
+  other <- pace_working_response_chunk_cpp(
+    matrix(0, 0, 0), numeric(0), TRUE, matrix(0, 0, 0), p, B * 3, Z, U * 3,
+    seq_len(n_genes), counts, ambient, 1L, offset * 5, rho * 0, sigma2, numeric(0),
+    FALSE, TRUE, FALSE, n, n_genes, 1L)
+  expect_identical(other$z, got$z)
+  expect_identical(other$w, got$w)
+
+  ## Sub-blocking and threading must not move it either.
+  for (sub_genes in c(1L, 2L, n_genes)) {
+    for (threads in c(1L, 4L)) {
+      split <- pace_working_response_chunk_cpp(
+        matrix(0, 0, 0), numeric(0), TRUE, matrix(0, 0, 0), p, B, Z, U,
+        seq_len(n_genes), counts, ambient, 1L, offset, rho, sigma2, numeric(0),
+        FALSE, TRUE, FALSE, n, as.integer(sub_genes), threads)
+      expect_identical(split$z, got$z)
+      expect_identical(split$w, got$w)
+      expect_equal(split$colsum_w, got$colsum_w, tolerance = 1e-12)
+    }
+  }
+
+  ## A non-positive sigma2 is refused rather than silently giving Inf weights.
+  expect_error(
+    pace_working_response_chunk_cpp(
+      matrix(0, 0, 0), numeric(0), TRUE, matrix(0, 0, 0), p, B, Z, U,
+      seq_len(n_genes), counts, ambient, 1L, offset, rho, replace(sigma2, 1, 0),
+      numeric(0), FALSE, TRUE, FALSE, n, n_genes, 1L),
+    "sigma2")
 })

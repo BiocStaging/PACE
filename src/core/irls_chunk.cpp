@@ -85,14 +85,20 @@ inline double rho_weighted_ambient(bool seed_iteration, double count, double eta
 Status working_response(Span<const double> eta, const GeneBlock& counts, const GeneBlock& ambient,
                         Span<const double> offset, Span<const double> rho,
                         Span<const double> alpha, Span<const double> sample_weight, bool nb2,
-                        bool seed_iteration, std::int64_t n, std::int64_t n_genes, Span<double> z,
-                        Span<double> w, Span<double> colsum_w, int n_threads,
+                        bool gaussian, bool seed_iteration, std::int64_t n, std::int64_t n_genes,
+                        Span<double> z, Span<double> w, Span<double> colsum_w, int n_threads,
                         const InterruptCheck& interrupted) {
   const std::int64_t cells_times_genes = n * n_genes;
-  if (!seed_iteration && eta.size != cells_times_genes) {
+  // The Gaussian path reads neither eta nor the ambient block, so it is exempt
+  // from the checks on them; `alpha` carries sigma2_g and must still be sized.
+  if (!gaussian && !seed_iteration && eta.size != cells_times_genes) {
     return Status::failure(StatusCode::invalid_argument, "eta must be n * n_genes");
   }
-  if (offset.size != n || rho.size != n || alpha.size != n_genes) {
+  if (gaussian) {
+    if (alpha.size != n_genes) {
+      return Status::failure(StatusCode::invalid_argument, "sigma2 must have one entry per gene");
+    }
+  } else if (offset.size != n || rho.size != n || alpha.size != n_genes) {
     return Status::failure(StatusCode::invalid_argument, "offset, rho or alpha have the wrong size");
   }
   if (sample_weight.size != 0 && sample_weight.size != n) {
@@ -104,12 +110,20 @@ Status working_response(Span<const double> eta, const GeneBlock& counts, const G
   if (!block_covers(counts, n, n_genes)) {
     return Status::failure(StatusCode::invalid_argument, "the count block does not cover the genes");
   }
-  if (!seed_iteration && !block_covers(ambient, n, n_genes)) {
+  if (!gaussian && !seed_iteration && !block_covers(ambient, n, n_genes)) {
     return Status::failure(StatusCode::invalid_argument, "the ambient block does not cover the genes");
   }
-  for (std::int64_t i = 0; i < n; ++i) {
-    if (!std::isfinite(offset[i]) || !std::isfinite(rho[i])) {
-      return Status::failure(StatusCode::invalid_argument, "offset and rho must be finite");
+  if (!gaussian) {
+    for (std::int64_t i = 0; i < n; ++i) {
+      if (!std::isfinite(offset[i]) || !std::isfinite(rho[i])) {
+        return Status::failure(StatusCode::invalid_argument, "offset and rho must be finite");
+      }
+    }
+  } else {
+    for (std::int64_t j = 0; j < n_genes; ++j) {
+      if (!(alpha[j] > 0) || !std::isfinite(alpha[j])) {
+        return Status::failure(StatusCode::invalid_argument, "sigma2 must be finite and positive");
+      }
     }
   }
 
@@ -123,6 +137,24 @@ Status working_response(Span<const double> eta, const GeneBlock& counts, const G
     static thread_local std::vector<double> ambient_column;
     for (std::int64_t j = begin; j < end; ++j) {
       expand_column(counts, j, n, y_column);
+      if (gaussian) {
+        // Identity link: z is the raw intensity and w is the per-gene scalar
+        // 1 / sigma2_g, so neither depends on eta. The R engine builds the same
+        // weight with rep(1 / sigma2[genes], each = n); a scalar written n times
+        // and a scalar summed n times agree with it to the bit, and colsum_w
+        // accumulates in long double exactly as R's colSums does.
+        const double inverse_sigma2 = 1.0 / alpha[j];
+        long double weight_sum = 0.0L;
+        for (std::int64_t i = 0; i < n; ++i) {
+          double weight = inverse_sigma2;
+          if (sample_weight.size != 0) weight = weight * sample_weight[i];
+          z[i + j * n] = y_column[static_cast<std::size_t>(i)];
+          w[i + j * n] = weight;
+          if (!std::isnan(weight)) weight_sum += weight;
+        }
+        colsum_w[j] = static_cast<double>(weight_sum);
+        continue;
+      }
       if (!seed_iteration) expand_column(ambient, j, n, ambient_column);
       const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
       const double alpha_gene = alpha[j];
