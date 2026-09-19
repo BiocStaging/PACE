@@ -173,19 +173,25 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## mu_ig = mu_bio_ig + rho_i * a_ig ; a_ig = E^tech ambient = (ambient_W %*% Y)[i,g].
   ## ============================================================
   percell_mode    <- isTRUE(bleed_percell)
-  additive_active <- percell_mode &&
+  ## Gaussian never activates the contamination path: there is no ambient field,
+  ## no rho and no anchors, because the intensities reaching it have already been
+  ## corrected. add_rho stays zero throughout so the shared summary and
+  ## reconstruction code, which references it, is a no-op rather than a branch.
+  additive_active <- (!is_gaussian) && percell_mode &&
                      !is.null(ambient_W) && ambient_n_images > 0L
-  if (!additive_active)
+  if (!is_gaussian && !additive_active)
     stop("fit_pace_mvpql_streaming: only the per-cell contamination (additive) ",
          "path is ported. Supply bleed_percell=TRUE, ambient_W, ambient_n_images>0.")
 
-  stopifnot(methods::is(ambient_W, "Matrix"),
-            nrow(ambient_W) == n, ncol(ambient_W) == n,
-            length(ambient_image_idx) == n)
-  add_cell_image <- as.integer(ambient_image_idx)
-  add_rho        <- numeric(n)   ## per-cell contamination loading rho_i
+  if (additive_active) {
+    stopifnot(methods::is(ambient_W, "Matrix"),
+              nrow(ambient_W) == n, ncol(ambient_W) == n,
+              length(ambient_image_idx) == n)
+    add_cell_image <- as.integer(ambient_image_idx)
+  }
+  add_rho <- numeric(n)   ## per-cell contamination loading rho_i; stays 0 on Gaussian
 
-  if (!is.null(percell_anchor_mask)) {
+  if (additive_active && !is.null(percell_anchor_mask)) {
     if (!is.null(percell_anchor_idx)) {     ## MEM: per-type mask (n_types x G) + length-n index
       stopifnot(ncol(percell_anchor_mask) == g_n, length(percell_anchor_idx) == n,
                 max(percell_anchor_idx) <= nrow(percell_anchor_mask))
@@ -231,7 +237,15 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## Small, full-size state ONLY: B (p x G), U (q x G), se_B, se_U, re_var
   ## (q x G), alpha (G), tau arrays, add_rho (n). NO full n x G mu / mu_bio /
   ## mu_spill / technical_offset_mat across iterations.
-  alpha      <- rep(1, g_n)
+  ## On the Gaussian path `alpha` carries the per-gene residual variance
+  ## sigma2_g, the identity-link analogue of the NB dispersion. Seed it from the
+  ## marginal per-gene variance of Y (the fit explains some of that, so it is an
+  ## upper start) and let the residual-variance pass take over from iteration 1.
+  if (is_gaussian) {
+    alpha <- pace_marginal_variance_cpp(Y, 1e-8, n, g_n, .pace_thread_count(n_threads))
+  } else {
+    alpha <- rep(1, g_n)
+  }
   prev_alpha <- alpha
   B    <- matrix(0, p, g_n); U <- matrix(0, q, g_n)
   re_var <- matrix(0, q, g_n)
@@ -276,7 +290,13 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## of the (multiple) passes per iteration.
   ## The cache stays SPARSE: every pass below reads it one gene at a time in
   ## C++, so no dense n x |chunk| ambient block is ever formed.
-  a_cache <- .pace_as_dgc(ambient_W %*% Y)
+  ## Gaussian has no ambient field. The core still receives an ambient argument
+  ## at every call site, so hand it an all-zero sparse matrix of the right shape
+  ## rather than branching each site: the Gaussian working response never reads
+  ## it, and the zero matrix costs nothing to carry.
+  a_cache <- if (is_gaussian) methods::new("dgCMatrix", Dim = c(as.integer(n), as.integer(g_n)),
+                                           p = integer(g_n + 1L), i = integer(0), x = numeric(0))
+             else .pace_as_dgc(ambient_W %*% Y)
 
   ## The fixed-effect contribution X_fixed %*% coef[, chunk], as the core builds
   ## it. When p == 1 (intercept-only under E^tech) the matrix multiply becomes a
@@ -378,7 +398,12 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     } else {
       for (cs in chk_starts) {
         gene_idx_chk   <- cs:min(cs + chunk_size - 1L, g_n)
-        iter_precision <- if (last_iter) 0L else as.integer(interior_precision)
+        ## Gaussian forces double precision. The compositional neighbour kernels
+        ## make the single-precision per-gene Cholesky borderline on continuous
+        ## intensities (the float NaN-guard would fire every iteration), and the
+        ## fit is fast enough that the cost is negligible.
+        iter_precision <- if (last_iter || is_gaussian) 0L
+                          else as.integer(interior_precision)
 
         m_chk <- length(gene_idx_chk)
         ## The FUSED path also needs the pre-solve linear predictor for its rho
@@ -517,7 +542,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## num/den + convergence metric come from EITHER the fused Pass 1 above
     ## (fuse_rho=TRUE) OR this dedicated post-solve second pass (default). The
     ## accumulators were initialised before Pass 1.
-    if (!fuse_rho) {
+    ## Gaussian has no rho accumulation to do, so it falls through to the
+    ## coefficient-based metric below -- which is what it wants anyway, the
+    ## eta-based one being unusable when z does not depend on the fit.
+    if (!fuse_rho && !is_gaussian) {
     ## One core call per logical chunk (pace::rho_accumulate): it reads the
     ## counts and the ambient field sparsely, rebuilds mu_tot from the PREVIOUS
     ## rho as the dense solver did, accumulates num/den in long double across
@@ -548,7 +576,8 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     }
     rm(acc)
     } else {
-      ## Fused path: num/den already accumulated in Pass 1. COEFFICIENT-based
+      ## Fused path, and the Gaussian path. num/den are already accumulated in
+      ## Pass 1 (fused), or never accumulated at all (Gaussian). COEFFICIENT-based
       ## convergence metric -- the eta-based one is unusable here because the
       ## pre-solve eta equals the previous iteration's eta. rd = |U_new - U_prev|
       ## / max(|U_prev|, 1e-3) over the random-effect coefficients (they carry the
@@ -569,35 +598,41 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## rel_delta is now fully accumulated (Pass 2 or fused). After iter 1 the dense
     ## seed is no longer the previous eta (prev_B/prev_U are).
     prev_eta_set <- TRUE
-    ## Empirical-Bayes shrink of the per-cell loading (pace::rho_shrink). A cell
-    ## with non-finite accumulators carries no contamination information, so it
-    ## gets the prior and drops out of the precision weights; the count is
-    ## logged so a real divergence is visible rather than silently absorbed.
-    shrunk  <- pace_rho_shrink_cpp(num, den)
-    add_rho <- shrunk$rho
-    n_bad   <- shrunk$n_nonfinite
-    if (verbose && n_bad > 0L)
-      cat(sprintf("    [percell_bleed] it=%d guarded %d/%d non-finite den/num cells (rho=prior there)\n",
-                  it, n_bad, length(den)))
-    if (verbose && it <= 3) {
-      ## Streamed contam_frac diagnostic (matches dense print).
-      spill_sum <- numeric(n); tot_sum <- numeric(n)
-      for (cs in chk_starts) {
-        gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
-        eta_chk <- .eta_block(B, U, gene_idx_chk)
-        pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_cache, gene_idx_chk[1L],
-                                               add_rho, diagnostic_group, 1L,
-                                               want_groups = FALSE, return_matrices = FALSE)
-        spill_sum <- spill_sum + pass$spill_row_sum
-        tot_sum   <- tot_sum   + pass$total_row_sum
-        rm(eta_chk, pass)
+    ## Gaussian holds add_rho at 0: there is no ambient field to load onto, so
+    ## there is nothing to shrink and no contamination fraction to report.
+    if (!is_gaussian) {
+      ## Empirical-Bayes shrink of the per-cell loading (pace::rho_shrink). A cell
+      ## with non-finite accumulators carries no contamination information, so it
+      ## gets the prior and drops out of the precision weights; the count is
+      ## logged so a real divergence is visible rather than silently absorbed.
+      shrunk  <- pace_rho_shrink_cpp(num, den)
+      add_rho <- shrunk$rho
+      n_bad   <- shrunk$n_nonfinite
+      if (verbose && n_bad > 0L)
+        cat(sprintf("    [percell_bleed] it=%d guarded %d/%d non-finite den/num cells (rho=prior there)\n",
+                    it, n_bad, length(den)))
+      if (verbose && it <= 3) {
+        ## Streamed contam_frac diagnostic (matches dense print).
+        spill_sum <- numeric(n); tot_sum <- numeric(n)
+        for (cs in chk_starts) {
+          gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
+          eta_chk <- .eta_block(B, U, gene_idx_chk)
+          pass <- pace_final_pass_statistics_cpp(eta_chk, offset_vec, a_cache, gene_idx_chk[1L],
+                                                 add_rho, diagnostic_group, 1L,
+                                                 want_groups = FALSE, return_matrices = FALSE)
+          spill_sum <- spill_sum + pass$spill_row_sum
+          tot_sum   <- tot_sum   + pass$total_row_sum
+          rm(eta_chk, pass)
+        }
+        fr <- spill_sum / pmax(tot_sum, 1e-9)
+        cat(sprintf("    [percell_bleed] it=%d  rho_i [%.4f,%.4f] med=%.4f  contam_frac med=%.3f q90=%.3f\n",
+                    it, min(add_rho), max(add_rho), stats::median(add_rho),
+                    stats::median(fr), stats::quantile(fr, 0.9)))
       }
-      fr <- spill_sum / pmax(tot_sum, 1e-9)
-      cat(sprintf("    [percell_bleed] it=%d  rho_i [%.4f,%.4f] med=%.4f  contam_frac med=%.3f q90=%.3f\n",
-                  it, min(add_rho), max(add_rho), stats::median(add_rho),
-                  stats::median(fr), stats::quantile(fr, 0.9)))
+      rm(num, den)
+    } else {
+      rm(num, den)
     }
-    rm(num, den)
 
     ## ----- alpha MLE per gene (streamed mu reconstruction per gene) -----
     ## Dense computes alpha on the FULL mu = mu_bio + rho_i*a (the NEW add_rho).
@@ -606,7 +641,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## quickly, so we only re-fit it for the first `alpha_warmup` iterations (and
     ## the last iteration); otherwise alpha / prev_alpha are left unchanged.
     ## alpha_warmup = Inf disables the freeze (always update = exact).
-    update_alpha <- (it <= alpha_warmup) || last_iter
+    ## Gaussian: the residual variance is one pass over the data, not a per-gene
+    ## Brent search, so there is nothing to amortise -- update it every
+    ## iteration. The warmup freeze exists only for the NB alpha MLE.
+    update_alpha <- is_gaussian || (it <= alpha_warmup) || last_iter
     if (update_alpha) {
     ## The whole sweep runs in the core: each gene's fitted mean is rebuilt from
     ## its own column and its dispersion minimised over log alpha, on the core's
@@ -614,9 +652,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## R matrix built and dropped per chunk.
     fitted <- pace_dispersion_pass_cpp(
       x1_or_empty, isTRUE(x1_is_unit), x_fixed_dense, p, Z, B, U,
-      Y, a_cache, offset_vec, add_rho, disp_nb2, alpha_zero_collapse, alpha_max_n,
+      Y, a_cache, offset_vec, add_rho, disp_nb2, is_gaussian, alpha_zero_collapse, alpha_max_n,
       alpha_fast_density, n, as.integer(chunk_size), .pace_thread_count(n_threads))
-    if (fitted$n_noninteger > 0)
+    if (!is_gaussian && fitted$n_noninteger > 0)
       warning(sprintf("iter %d: %.0f gene(s) have counts that are not whole numbers; their ",
                       it, fitted$n_noninteger),
               "dispersion is undefined and keeps its previous value.", call. = FALSE)
@@ -624,7 +662,10 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     rm(fitted)
     alpha <- alpha_new
     alpha[!is.finite(alpha)] <- prev_alpha[!is.finite(alpha)]
-    alpha <- pmin(pmax(alpha, 1e-4), 50)
+    ## The [1e-4, 50] clamp is the NB dispersion's range. A residual variance is
+    ## on the scale of the intensities and has no business being clamped to it;
+    ## the core has already floored it at 1e-8.
+    if (!is_gaussian) alpha <- pmin(pmax(alpha, 1e-4), 50)
     prev_alpha <- alpha
     } else if (verbose) {
       cat(sprintf("    [alpha] it=%d > alpha_warmup=%s: alpha FROZEN\n",

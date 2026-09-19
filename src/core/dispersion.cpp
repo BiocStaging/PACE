@@ -391,4 +391,78 @@ double estimate_d0(double log_variance, std::int64_t n_used, double d0_max, Trig
   return std::min(2 * root, d0_max);
 }
 
+Status residual_variance_chunk(Span<const double> eta, const GeneBlock& counts,
+                               Span<const double> offset, double floor_value, std::int64_t n,
+                               std::int64_t n_genes, Span<double> sigma2, int n_threads,
+                               const InterruptCheck& interrupted) {
+  if (eta.size != n * n_genes) {
+    return Status::failure(StatusCode::invalid_argument, "eta must be n * n_genes");
+  }
+  if (offset.size != n) {
+    return Status::failure(StatusCode::invalid_argument, "offset must have one entry per cell");
+  }
+  if (sigma2.size != n_genes) {
+    return Status::failure(StatusCode::invalid_argument, "sigma2 must have one entry per gene");
+  }
+  for (std::int64_t i = 0; i < n; ++i) {
+    if (!std::isfinite(offset[i])) {
+      return Status::failure(StatusCode::invalid_argument, "offset must be finite");
+    }
+  }
+
+  auto body = [&](std::int64_t begin, std::int64_t end) {
+    static thread_local std::vector<double> y_column;
+    for (std::int64_t j = begin; j < end; ++j) {
+      expand_column(counts, j, n, y_column);
+      const double* eta_column = eta.data + j * n;
+      long double square_sum = 0.0L;
+      for (std::int64_t i = 0; i < n; ++i) {
+        // Identity link: the fitted mean is eta + offset, with no exp and no
+        // lower clip. R forms mu, subtracts, squares, then takes colMeans.
+        const double residual = y_column[static_cast<std::size_t>(i)] - (eta_column[i] + offset[i]);
+        square_sum += static_cast<long double>(residual * residual);
+      }
+      const double mean_square = static_cast<double>(square_sum / static_cast<long double>(n));
+      sigma2[j] = mean_square > floor_value ? mean_square : floor_value;
+    }
+  };
+  // One gene per block: gene j reads only column j and writes only sigma2[j],
+  // and the long double accumulator never crosses a gene boundary, so the
+  // answer does not depend on the worker count.
+  return parallel_for(n_genes, n_threads, 1, body, interrupted);
+}
+
+Status marginal_variance(const GeneBlock& counts, double floor_value, std::int64_t n,
+                         std::int64_t n_genes, Span<double> sigma2, int n_threads,
+                         const InterruptCheck& interrupted) {
+  if (sigma2.size != n_genes) {
+    return Status::failure(StatusCode::invalid_argument, "sigma2 must have one entry per gene");
+  }
+  if (n <= 0) {
+    return Status::failure(StatusCode::invalid_argument, "there must be at least one cell");
+  }
+
+  auto body = [&](std::int64_t begin, std::int64_t end) {
+    static thread_local std::vector<double> y_column;
+    for (std::int64_t j = begin; j < end; ++j) {
+      expand_column(counts, j, n, y_column);
+      long double sum = 0.0L;
+      long double square_sum = 0.0L;
+      for (std::int64_t i = 0; i < n; ++i) {
+        const double y = y_column[static_cast<std::size_t>(i)];
+        sum += static_cast<long double>(y);
+        square_sum += static_cast<long double>(y * y);
+      }
+      const long double cells = static_cast<long double>(n);
+      const double mean = static_cast<double>(sum / cells);
+      const double mean_square = static_cast<double>(square_sum / cells);
+      const double variance = mean_square - mean * mean;
+      sigma2[j] = variance > floor_value ? variance : floor_value;
+    }
+  };
+  // One gene per block, as residual_variance_chunk partitions it, so the answer
+  // does not depend on the worker count.
+  return parallel_for(n_genes, n_threads, 1, body, interrupted);
+}
+
 }  // namespace pace

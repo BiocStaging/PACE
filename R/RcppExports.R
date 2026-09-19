@@ -177,8 +177,12 @@ pace_rho_pass_cpp <- function(x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, 
     .Call(`_PACE_pace_rho_pass_cpp`, x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, prev_b, prev_u, have_previous, counts, ambient, offset, rho, alpha, mask, mask_index, nb2, want_tail_counts, n_cells, chunk_size, n_threads)
 }
 
-pace_dispersion_pass_cpp <- function(x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads) {
-    .Call(`_PACE_pace_dispersion_pass_cpp`, x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads)
+pace_marginal_variance_cpp <- function(counts, floor_value, n_cells, n_genes, n_threads) {
+    .Call(`_PACE_pace_marginal_variance_cpp`, counts, floor_value, n_cells, n_genes, n_threads)
+}
+
+pace_dispersion_pass_cpp <- function(x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, gaussian, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads) {
+    .Call(`_PACE_pace_dispersion_pass_cpp`, x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, gaussian, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads)
 }
 
 pace_fit_pass1_cpp <- function(x1, x1_is_unit, x_fixed, solve_x_fixed, p, z_design, blocks, terms_list, cells_by_group_list, cell_group_list, b_in, u_in, lam_diag, counts, ambient, offset, rho, alpha, sample_weight, nb2, gaussian, seed_iteration, n_cells, chunk_size, sub_genes, interior_precision, last_iter, n_threads) {

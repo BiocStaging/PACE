@@ -85,6 +85,43 @@ Status dispersion_chunk(Span<const double> eta, const GeneBlock& counts, const G
                         std::int64_t n_genes, Span<double> alpha, std::int64_t* n_noninteger,
                         int n_threads, const InterruptCheck& interrupted);
 
+// The per-gene residual variance of one chunk, the identity-link analogue of
+// the NB dispersion above and the Gaussian path's whole dispersion step:
+//
+//   sigma2_g = mean_i (y_ig - mu_ig)^2,   mu_ig = eta_ig + offset_i
+//
+// floored at `floor_value`. There is no optimisation to do and no density to
+// call: on the identity link the residual variance IS the moment estimate, so
+// where the NB path runs a Brent search per gene this is one pass over the
+// data. The counts are read one gene at a time from the sparse block, as
+// dispersion_chunk() reads them.
+//
+// The sum accumulates in long double and is divided by n at the end, which is
+// what R's colMeans() does, so the result agrees with the R engine's
+// colMeans((Y - eta - offset)^2) to the bit.
+//
+// Shapes: `eta` is n * n_genes column-major; `offset` has n entries; `sigma2`
+// has n_genes.
+Status residual_variance_chunk(Span<const double> eta, const GeneBlock& counts,
+                               Span<const double> offset, double floor_value, std::int64_t n,
+                               std::int64_t n_genes, Span<double> sigma2, int n_threads,
+                               const InterruptCheck& interrupted);
+
+// The marginal per-gene variance, which is what the Gaussian path seeds its
+// residual variance with before there is a fit to take residuals from:
+//
+//   sigma2_g = mean_i y_ig^2 - (mean_i y_ig)^2
+//
+// floored at `floor_value`. Both means accumulate in long double and are
+// divided by n, matching R's colMeans(Y * Y) - colMeans(Y)^2 -- but in ONE pass
+// over each gene's column and without materialising Y * Y, which at n cells by
+// G genes is a second full matrix.
+//
+// Shapes: `sigma2` has n_genes. The counts are read one gene at a time.
+Status marginal_variance(const GeneBlock& counts, double floor_value, std::int64_t n,
+                         std::int64_t n_genes, Span<double> sigma2, int n_threads,
+                         const InterruptCheck& interrupted);
+
 // The prior degrees of freedom of the adaptive tau shrinkage, from the
 // cross-gene variance of log s2 and how many genes entered it:
 //   excess = variance - trigamma(1/2);  d0 = min(2 x, d0_max) with trigamma(x) = excess

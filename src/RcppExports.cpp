@@ -730,9 +730,24 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_marginal_variance_cpp
+Rcpp::NumericVector pace_marginal_variance_cpp(const Rcpp::S4& counts, double floor_value, int n_cells, int n_genes, int n_threads);
+RcppExport SEXP _PACE_pace_marginal_variance_cpp(SEXP countsSEXP, SEXP floor_valueSEXP, SEXP n_cellsSEXP, SEXP n_genesSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type counts(countsSEXP);
+    Rcpp::traits::input_parameter< double >::type floor_value(floor_valueSEXP);
+    Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_genes(n_genesSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_marginal_variance_cpp(counts, floor_value, n_cells, n_genes, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // pace_dispersion_pass_cpp
-Rcpp::List pace_dispersion_pass_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::S4& z_design, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in, const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, bool nb2, bool zero_collapse, double max_cells, bool fast_density, int n_cells, int chunk_size, int n_threads);
-RcppExport SEXP _PACE_pace_dispersion_pass_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP pSEXP, SEXP z_designSEXP, SEXP b_inSEXP, SEXP u_inSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP nb2SEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP, SEXP fast_densitySEXP, SEXP n_cellsSEXP, SEXP chunk_sizeSEXP, SEXP n_threadsSEXP) {
+Rcpp::List pace_dispersion_pass_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::S4& z_design, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in, const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, bool nb2, bool gaussian, bool zero_collapse, double max_cells, bool fast_density, int n_cells, int chunk_size, int n_threads);
+RcppExport SEXP _PACE_pace_dispersion_pass_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP pSEXP, SEXP z_designSEXP, SEXP b_inSEXP, SEXP u_inSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP nb2SEXP, SEXP gaussianSEXP, SEXP zero_collapseSEXP, SEXP max_cellsSEXP, SEXP fast_densitySEXP, SEXP n_cellsSEXP, SEXP chunk_sizeSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -748,13 +763,14 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type offset(offsetSEXP);
     Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type rho(rhoSEXP);
     Rcpp::traits::input_parameter< bool >::type nb2(nb2SEXP);
+    Rcpp::traits::input_parameter< bool >::type gaussian(gaussianSEXP);
     Rcpp::traits::input_parameter< bool >::type zero_collapse(zero_collapseSEXP);
     Rcpp::traits::input_parameter< double >::type max_cells(max_cellsSEXP);
     Rcpp::traits::input_parameter< bool >::type fast_density(fast_densitySEXP);
     Rcpp::traits::input_parameter< int >::type n_cells(n_cellsSEXP);
     Rcpp::traits::input_parameter< int >::type chunk_size(chunk_sizeSEXP);
     Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
-    rcpp_result_gen = Rcpp::wrap(pace_dispersion_pass_cpp(x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads));
+    rcpp_result_gen = Rcpp::wrap(pace_dispersion_pass_cpp(x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, counts, ambient, offset, rho, nb2, gaussian, zero_collapse, max_cells, fast_density, n_cells, chunk_size, n_threads));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -874,7 +890,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_normalise_rows_to_max_cpp", (DL_FUNC) &_PACE_pace_normalise_rows_to_max_cpp, 1},
     {"_PACE_pace_eta_block_cpp", (DL_FUNC) &_PACE_pace_eta_block_cpp, 9},
     {"_PACE_pace_rho_pass_cpp", (DL_FUNC) &_PACE_pace_rho_pass_cpp, 22},
-    {"_PACE_pace_dispersion_pass_cpp", (DL_FUNC) &_PACE_pace_dispersion_pass_cpp, 18},
+    {"_PACE_pace_marginal_variance_cpp", (DL_FUNC) &_PACE_pace_marginal_variance_cpp, 5},
+    {"_PACE_pace_dispersion_pass_cpp", (DL_FUNC) &_PACE_pace_dispersion_pass_cpp, 19},
     {"_PACE_pace_fit_pass1_cpp", (DL_FUNC) &_PACE_pace_fit_pass1_cpp, 28},
     {"_PACE_pace_working_response_chunk_cpp", (DL_FUNC) &_PACE_pace_working_response_chunk_cpp, 22},
     {NULL, NULL, 0}

@@ -1184,12 +1184,27 @@ Rcpp::List pace_rho_pass_cpp(
 // them. Per chunk R built eta as an n x chunk matrix, passed it in, took the
 // alphas back and dropped the matrix. Here eta is a buffer reused across
 // chunks and only the finished alphas cross back.
+// The Gaussian path's sigma2 seed: the marginal per-gene variance, before there
+// is a fit to take residuals from. Replaces colMeans(Y * Y) - colMeans(Y)^2 in
+// R, which materialised a second n x G matrix to do it.
+// [[Rcpp::export]]
+Rcpp::NumericVector pace_marginal_variance_cpp(const Rcpp::S4& counts, double floor_value,
+                                               int n_cells, int n_genes, int n_threads) {
+  CscHolder count_holder(counts);
+  Rcpp::NumericVector sigma2(n_genes);
+  const pace::Status status = pace::marginal_variance(
+      gene_block(count_holder, 1), floor_value, n_cells, n_genes, out_span(sigma2), n_threads,
+      user_interrupted);
+  raise_if_failed(status, "marginal variance");
+  return sigma2;
+}
+
 // [[Rcpp::export]]
 Rcpp::List pace_dispersion_pass_cpp(
     const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p,
     const Rcpp::S4& z_design, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in,
     const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset,
-    const Rcpp::NumericVector& rho, bool nb2, bool zero_collapse, double max_cells,
+    const Rcpp::NumericVector& rho, bool nb2, bool gaussian, bool zero_collapse, double max_cells,
     bool fast_density, int n_cells, int chunk_size, int n_threads) {
   CscHolder count_holder(counts);
   CscHolder ambient_holder(ambient);
@@ -1223,6 +1238,18 @@ Rcpp::List pace_dispersion_pass_cpp(
         const_span(u_in), pace::Span<const int>(chunk_genes.data(), m_chunk), n, n_genes_total,
         pace::Span<double>(eta.data(), n * m_chunk), n_threads, user_interrupted);
     raise_if_failed(eta_status, "eta block");
+
+    if (gaussian) {
+      // The identity-link dispersion step: the residual variance, floored where
+      // the R engine's pmax(sigma2_new, 1e-8) floors it. No density, no search.
+      const pace::Status sigma2_status = pace::residual_variance_chunk(
+          pace::Span<const double>(eta.data(), n * m_chunk),
+          gene_block(count_holder, static_cast<int>(first) + 1), double_span(offset), 1e-8, n,
+          m_chunk, pace::Span<double>(alpha.begin() + first, m_chunk), n_threads,
+          user_interrupted);
+      raise_if_failed(sigma2_status, "residual variance");
+      continue;
+    }
 
     std::int64_t n_noninteger = 0;
     const pace::Status status = pace::dispersion_chunk(
