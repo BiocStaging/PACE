@@ -120,18 +120,22 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      ## instead, trading a sparse product per pass for the whole
                                      ## cache -- 5.2 GB at 1.2M cells by 5,001 genes, which is the
                                      ## difference between fitting and paging there.
-                                     ## The CHUNKING is exact -- a sparse product is column-
-                                     ## independent -- but the product is not bit-identical to the
-                                     ## cached one: the core uses a Gustavson accumulator where
-                                     ## Matrix uses CHOLMOD, and the orderings differ at ~1e-15 an
-                                     ## entry, growing to ~1e-6 in the coefficients over a fit.
-                                     ## "cache" stays the default and the bit-identical path.
+                                     ## The two are BIT-IDENTICAL: the chunking is exact because a
+                                     ## sparse product is column-independent, and the accumulation
+                                     ## matches CHOLMOD once FMA contraction is disabled in the
+                                     ## core. Verified across chunk sizes and thread counts.
                                      ambient_mode      = c("cache", "stream"),
                                      verbose           = TRUE) {
   ambient_mode <- match.arg(ambient_mode)
   tau_shrinkage <- match.arg(tau_shrinkage)
   family        <- match.arg(family)
   is_gaussian   <- identical(family, "gaussian")   ## guards every Gaussian branch
+  ## Streaming is a property of the CONTAMINATION path. Gaussian has no ambient
+  ## field -- it is handed an all-zero n x G matrix it never reads -- so asking
+  ## the core to stream would have it multiply that matrix by the counts, which
+  ## do not conform (G by n against n by G) and the fit dies. There is nothing
+  ## to stream, so the request is simply not carried through.
+  stream_ambient <- (!is_gaussian) && identical(ambient_mode, "stream")
   disp_model    <- match.arg(disp_model)
   if (isTRUE(return_mu))
     warning("`return_mu` is deprecated: the fit stores the per-cell-type statistics the ",
@@ -301,9 +305,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   ## it, and the zero matrix costs nothing to carry.
   a_cache <- if (is_gaussian) methods::new("dgCMatrix", Dim = c(as.integer(n), as.integer(g_n)),
                                            p = integer(g_n + 1L), i = integer(0), x = numeric(0))
-             else if (identical(ambient_mode, "stream")) .pace_as_dgc(ambient_W)
+             else if (stream_ambient) .pace_as_dgc(ambient_W)
              else .pace_as_dgc(ambient_W %*% Y)
-  if (identical(ambient_mode, "stream") && verbose)
+  if (stream_ambient && verbose)
     cat("  [mvpql.streaming] ambient field STREAMED: the n x G product is never materialised\n")
 
   ## The fixed-effect contribution X_fixed %*% coef[, chunk], as the core builds
@@ -375,7 +379,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
       Y, a_cache, offset_vec, sample_weight_vec, mask_matrix, mask_index,
       if (is.null(data_informed_W)) empty_matrix else data_informed_W,
       alpha, if (is.null(colnames(Y))) character(0) else colnames(Y),
-      identical(ambient_mode, "stream"),
+      stream_ambient,
       n, q, g_n,
       as.integer(n_iter), as.integer(min_iter), as.numeric(early_stop_tol),
       as.numeric(alpha_warmup), format(alpha_warmup),
@@ -474,7 +478,7 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## build its own chunk. Slicing first and multiplying gives exactly what
     ## multiplying and slicing would -- a sparse product is column-independent --
     ## and this runs once at the end rather than per iteration.
-    if (identical(ambient_mode, "stream")) {
+    if (stream_ambient) {
       ambient_chk <- .pace_as_dgc(a_cache %*% Y[, gene_idx_chk, drop = FALSE])
       first_gene_chk <- 1L
     } else {

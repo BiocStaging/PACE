@@ -124,10 +124,11 @@ test_that("the Gaussian family solves its interior in double precision", {
 test_that("the streamed ambient field agrees with the cached one", {
   # "stream" recomputes each chunk's ambient columns from W and Y rather than
   # slicing a cached n x G product, which is what makes the full Xenium 5K panel
-  # fit in memory at 1.2M cells. The two are numerically equivalent but NOT
-  # bit-identical: the core accumulates the product through a Gustavson sparse
-  # accumulator where Matrix uses CHOLMOD, and the two associate the same sums
-  # differently at about 1e-15 an entry.
+  # fit in memory at 1.2M cells. The two are BIT-IDENTICAL: the chunking is
+  # exact because a sparse product is column-independent, and the accumulation
+  # matches CHOLMOD's once FMA contraction is disabled (fp_no_contract.hpp in
+  # sparse_product.cpp -- without it clang contracts the multiply-add and the
+  # answers drift by about 1e-6 in the coefficients).
   #
   # This once differed by 2.13 in U, not 1e-6, because rho_accumulate derived
   # the anchor mask's column from the AMBIENT block's gene offset. That offset
@@ -149,11 +150,8 @@ test_that("the streamed ambient field agrees with the cached one", {
   cached <- fit_in("cache")
   streamed <- fit_in("stream")
 
-  expect_equal(streamed$U, cached$U, tolerance = 1e-4)
-  expect_equal(streamed$B, cached$B, tolerance = 1e-4)
-  expect_equal(streamed$percell_bleed_rho, cached$percell_bleed_rho, tolerance = 1e-4)
+  expect_identical(streamed$U, cached$U)
+  expect_identical(streamed$B, cached$B)
+  expect_identical(streamed$percell_bleed_rho, cached$percell_bleed_rho)
   expect_identical(streamed$n_iter, cached$n_iter)
-  # The mask bug moved U by 2.13, so a tolerance that loose would have caught it
-  # while still passing on the accumulation-order difference.
-  expect_lt(max(abs(streamed$U - cached$U)), 1e-3)
 })

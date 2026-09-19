@@ -123,7 +123,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
                  Span<const double> solve_x_fixed, std::int64_t p, const CscView& z,
                  const std::vector<SolveBlock>& solve_blocks, Span<const double> beta_in,
                  Span<const double> u_in, Span<const double> lam_diag, const GeneBlock& counts,
-                 const const AmbientSource& ambient, Span<const double> offset, Span<const double> rho,
+                 const AmbientSource& ambient, Span<const double> offset, Span<const double> rho,
                  Span<const double> alpha, Span<const double> sample_weight, bool nb2,
                  bool gaussian, bool seed_iteration, std::int64_t n, std::int64_t q_total,
                  std::int64_t n_genes, std::int64_t chunk_size, std::int64_t sub_genes,
@@ -148,8 +148,12 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
     // One ambient block per chunk, from the cache or recomputed from W and Y.
     // Sub-blocks below slice THIS block, so a streamed chunk is built once per
     // pass rather than once per sub-block.
+    // The working response reads the ambient field only when it is modelling
+    // contamination: not at the seed iteration, where mu is max(y, 0.5), and
+    // never on the Gaussian path. Building it anyway cost a full streamed
+    // product per chunk for nothing on every iteration 1.
     GeneBlock chunk_ambient;
-    {
+    if (!gaussian && !seed_iteration) {
       const Status ambient_status =
           ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
       if (!ambient_status.is_ok()) return ambient_status;
@@ -388,7 +392,8 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     // Sub-blocks below slice THIS block, so a streamed chunk is built once per
     // pass rather than once per sub-block.
     GeneBlock chunk_ambient;
-    {
+    // Gaussian takes the residual-variance branch below and never reads this.
+    if (!gaussian) {
       const Status ambient_status =
           ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
       if (!ambient_status.is_ok()) return ambient_status;

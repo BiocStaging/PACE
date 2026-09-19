@@ -53,18 +53,16 @@ namespace pace {
 // STREAMED recomputes each chunk's columns from W and Y instead. It costs a
 // sparse product per pass per iteration and saves the whole cache.
 //
-// The CHUNKING is exact -- a sparse product is column-independent, so a chunk's
-// columns do not depend on how the panel is cut, and this was verified against
-// Matrix across several ranges. What is NOT bit-identical is the product
-// itself: the core accumulates through a Gustavson sparse accumulator while the
-// cached path gets CHOLMOD's ordering from Matrix, and the two associate the
-// same sums differently at about 1e-15 an entry. Over a fit that grows to
-// around 1e-6 in the coefficients.
-//
-// So the modes are numerically equivalent, not identical. Cached stays the
-// default and remains the bit-identical path for the manuscript cohorts;
-// streamed is for panels where the cache does not fit, where a 1e-6 difference
-// against a run that cannot be performed is not a meaningful comparison.
+// The two modes are BIT-IDENTICAL, verified on a real cohort across chunk
+// sizes 16, 64 and 278 and at one and four threads. Two things make that true.
+// The chunking is exact, because a sparse product is column-independent: a
+// chunk's columns do not depend on how the panel is cut. And the accumulation
+// matches CHOLMOD's because this file includes fp_no_contract.hpp -- without
+// it clang contracts `scratch[row] += a * b` into an FMA at its default
+// -ffp-contract=on, which is MORE accurate than a separate multiply and add
+// and therefore disagrees, by about 1e-15 an entry and about 1e-6 in the
+// coefficients once a fit has amplified it. That drift was mistaken for an
+// ordering difference before the include was added.
 struct AmbientSource {
   // Cached: a view of the whole n x G product, sliced per chunk.
   GeneBlock cached;
@@ -113,7 +111,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
                  Span<const double> solve_x_fixed, std::int64_t p, const CscView& z,
                  const std::vector<SolveBlock>& solve_blocks, Span<const double> beta_in,
                  Span<const double> u_in, Span<const double> lam_diag, const GeneBlock& counts,
-                 const const AmbientSource& ambient, Span<const double> offset, Span<const double> rho,
+                 const AmbientSource& ambient, Span<const double> offset, Span<const double> rho,
                  Span<const double> alpha, Span<const double> sample_weight, bool nb2,
                  bool gaussian, bool seed_iteration, std::int64_t n, std::int64_t q_total,
                  std::int64_t n_genes, std::int64_t chunk_size, std::int64_t sub_genes,
