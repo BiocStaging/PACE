@@ -469,7 +469,6 @@ pace_fit_streaming <- function(Y, df, types = NULL,
                                ## speed option, see fit_pace_mvpql_streaming()
                                alpha_zero_collapse = TRUE,
                                alpha_fast_density = TRUE,
-                               fuse = FALSE,
                                ## DEPRECATED: the fit keeps the per-cell-type statistics the
                                ## readouts need, and mu is rebuilt on demand from the fit and
                                ## the counts (.pace_mu_block()).
@@ -633,7 +632,7 @@ pace_fit_streaming <- function(Y, df, types = NULL,
       alpha_warmup = alpha_warmup, alpha_zero_collapse = alpha_zero_collapse,
       alpha_fast_density = alpha_fast_density,
       early_stop_tol = early_stop_tol,
-      min_iter = as.integer(min_iter), fuse_rho = fuse,
+      min_iter = as.integer(min_iter),
       tau_max = tau_max,
       return_mu = return_mu, verbose = verbose)
   } else {

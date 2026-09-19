@@ -1,71 +1,62 @@
-# The outer PQL iteration now runs in the core (pace::run_irls_loop). The R loop
-# it was transcribed from is still in fit_pace_mvpql_streaming(), reachable with
-# R_IRLS_R_LOOP, and it is the oracle: these tests fit the same data both ways
-# and require the two to agree BIT FOR BIT, not to a tolerance.
+# The outer PQL iteration runs in the core (pace::run_irls_loop). These tests
+# pin it to a digest frozen from the build that was proven identical, field for
+# field, to the R loop the core was transcribed from -- on the two canonical
+# cohorts as well as on these fixtures.
 #
-# Bit-identity is the right gate here, not 1e-10. The driver makes the same core
-# calls in the same order on the same buffers, so any difference at all means a
-# call moved, a guard changed, or a floor was dropped -- and this fit produced
-# numbers in a manuscript under review.
+# The oracle used to be the R loop itself, reached with R_IRLS_R_LOOP. That loop
+# is gone: it was reachable only under fuse_rho, and fuse_rho existed only to
+# fold the rho accumulation into the solve pass so that eta was not rebuilt a
+# third time per iteration -- a cost the R loop created and the core does not
+# have. Comparing against it had also become partly circular, since the R path's
+# three chunk passes call the same core functions the driver does.
+#
+# Bit-identity is the right gate, not a tolerance: the driver makes the same
+# core calls in the same order on the same buffers, so any difference at all
+# means a call moved, a guard changed or a floor was dropped -- and this fit
+# produced numbers in a manuscript under review.
+#
+# To regenerate after a DELIBERATE change, rebuild the reference with
+# irls_digest() over the same five fits and say in the commit why every digest
+# that moved was expected to move.
 
-fit_through_r_loop <- function(fit_expression) {
-  previous <- Sys.getenv("R_IRLS_R_LOOP", unset = NA_character_)
-  Sys.setenv(R_IRLS_R_LOOP = "1")
-  on.exit({
-    if (is.na(previous)) Sys.unsetenv("R_IRLS_R_LOOP") else Sys.setenv(R_IRLS_R_LOOP = previous)
-  }, add = TRUE)
-  force(fit_expression)
+reference_fits <- function() {
+  path <- testthat::test_path("irls-driver-reference.rds")
+  skip_if(!file.exists(path), "the frozen reference is not installed")
+  readRDS(path)
 }
 
-# Everything the loop owns. Comparing the whole list rather than a few matrices
-# is deliberate: the convergence history decides WHICH iteration is the last one,
-# so a history that drifts is a fit that will drift on the next dataset.
-loop_outputs <- function(fit) {
-  fit[c("B", "U", "se_B", "se_U", "alpha", "tau_g_array", "tau_blocks",
-        "percell_bleed_rho", "history", "n_iter", "converged")]
-}
-
-test_that("the core driver reproduces the R loop on the breast cancer subset", {
+bc_subset <- function() {
   skip_if_not_installed("SpatialExperiment")
   path <- system.file("extdata", "bc_xenium_subset.rds", package = "PACE")
   skip_if(path == "", "example dataset not installed")
-  spe <- readRDS(path)
+  readRDS(path)
+}
 
-  fit_once <- function() {
-    paceModel(spe, celltype_col = "cellType", contamination = "percell_hc",
-              dispersion = "nb1", n_iter = 6L, min_iter = 3L, threads = 2L,
-              verbose = FALSE)@fit
-  }
-  driven <- fit_once()
-  reference <- fit_through_r_loop(fit_once())
-
-  expect_identical(loop_outputs(driven), loop_outputs(reference))
-  # A fit that stopped at iteration one would pass the comparison above without
-  # exercising the early stop, the dispersion freeze or the tau update at all.
-  expect_gt(driven$n_iter, 1L)
+test_that("the core driver reproduces the frozen fit on the breast cancer subset", {
+  spe <- bc_subset()
+  fit <- paceModel(spe, celltype_col = "cellType", contamination = "percell_hc",
+                   dispersion = "nb1", n_iter = 6L, min_iter = 3L, threads = 2L,
+                   verbose = FALSE)@fit
+  expect_identical(irls_digest(fit), reference_fits()$bc)
+  # A fit that stopped at iteration one would match the digest without ever
+  # exercising the early stop, the dispersion freeze or the tau update.
+  expect_gt(fit$n_iter, 1L)
 })
 
-test_that("the core driver reproduces the R loop under the other tau shrinkages", {
-  skip_if_not_installed("SpatialExperiment")
-  path <- system.file("extdata", "bc_xenium_subset.rds", package = "PACE")
-  skip_if(path == "", "example dataset not installed")
-  spe <- readRDS(path)
-
+test_that("the core driver reproduces the frozen fit under the other tau shrinkages", {
+  spe <- bc_subset()
+  reference <- reference_fits()
   # "hierarchical" is the one that transposes: R holds a block's components as a
   # K_terms x K_groups matrix filled BY ROW from the flat slice, and handing the
   # slice to the shrinkage as it lies has been a bug before.
   for (shrinkage in c("shared", "hierarchical", "half_cauchy")) {
-    fit_once <- function() {
-      paceModel(spe, celltype_col = "cellType", tau_shrinkage = shrinkage,
-                n_iter = 5L, min_iter = 3L, threads = 2L, verbose = FALSE)@fit
-    }
-    driven <- fit_once()
-    reference <- fit_through_r_loop(fit_once())
-    expect_identical(loop_outputs(driven), loop_outputs(reference))
+    fit <- paceModel(spe, celltype_col = "cellType", tau_shrinkage = shrinkage,
+                     n_iter = 5L, min_iter = 3L, threads = 2L, verbose = FALSE)@fit
+    expect_identical(irls_digest(fit), reference[[paste0("tau_", shrinkage)]])
   }
 })
 
-test_that("the core driver reproduces the R loop on the Gaussian family", {
+test_that("the core driver reproduces the frozen fit on the Gaussian family", {
   # The identity link takes the coefficient-based convergence metric and the
   # residual-variance dispersion step, neither of which the count path reaches.
   set.seed(11)
@@ -74,49 +65,58 @@ test_that("the core driver reproduces the R loop on the Gaussian family", {
   df <- data.frame(celltype = sample(c("A", "B", "C"), n, replace = TRUE),
                    A = runif(n), B = runif(n), C = runif(n),
                    stringsAsFactors = FALSE)
-  x_fixed <- matrix(1, n, 1L, dimnames = list(NULL, "(Intercept)"))
   values <- matrix(rnorm(n * n_genes, mean = 4, sd = 1.5), n, n_genes)
   colnames(values) <- paste0("p", seq_len(n_genes))
   counts <- methods::as(methods::as(methods::as(values, "dMatrix"), "generalMatrix"),
                         "CsparseMatrix")
-  re_specs <- list(list(group_col = "celltype", formula = ~ 0 + A + B + C))
-
-  fit_once <- function() {
-    fit_pace_mvpql_streaming(
-      Y = counts, X_fixed = x_fixed, df = df, re_specs = re_specs,
-      family = "gaussian", n_iter = 6L, min_iter = 3L, chunk_size = 8L,
-      n_threads = 2L, verbose = FALSE)
-  }
-  driven <- fit_once()
-  reference <- fit_through_r_loop(fit_once())
-  expect_identical(loop_outputs(driven), loop_outputs(reference))
+  fit <- fit_pace_mvpql_streaming(
+    Y = counts, X_fixed = matrix(1, n, 1L, dimnames = list(NULL, "(Intercept)")),
+    df = df, re_specs = list(list(group_col = "celltype", formula = ~ 0 + A + B + C)),
+    family = "gaussian", n_iter = 6L, min_iter = 3L, chunk_size = 8L,
+    n_threads = 2L, verbose = FALSE)
+  expect_identical(irls_digest(fit), reference_fits()$gaussian)
 })
 
-test_that("a binding tau cap warns from the driver exactly as it did from R", {
-  skip_if_not_installed("SpatialExperiment")
-  path <- system.file("extdata", "bc_xenium_subset.rds", package = "PACE")
-  skip_if(path == "", "example dataset not installed")
-  spe <- readRDS(path)
+test_that("a binding tau cap warns from the driver, and the fit is unchanged", {
+  spe <- bc_subset()
+  seen <- character(0)
+  fit <- NULL
+  withCallingHandlers(
+    fit <- paceModel(spe, celltype_col = "cellType", tau_max = 0.001, n_iter = 4L,
+                     min_iter = 2L, threads = 2L, verbose = FALSE)@fit,
+    warning = function(w) {
+      seen <<- c(seen, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    })
+  reference <- reference_fits()
+  # The warnings are raised from R, after the binding has returned: raising them
+  # from C++ let options(warn = 2) longjmp past the destructors that hand the
+  # counts, the ambient field and Z back from R's precious list.
+  expect_gt(length(seen), 0L)
+  expect_identical(seen, reference$tau_cap_warnings)
+  expect_identical(irls_digest(fit), reference$tau_cap)
+})
 
-  collect_warnings <- function(expression) {
-    seen <- character(0)
-    withCallingHandlers(force(expression),
-                        warning = function(w) {
-                          seen <<- c(seen, conditionMessage(w))
-                          invokeRestart("muffleWarning")
-                        })
-    seen
-  }
-  fit_once <- function() {
-    paceModel(spe, celltype_col = "cellType", tau_max = 0.001, n_iter = 4L,
-              min_iter = 2L, threads = 2L, verbose = FALSE)@fit
-  }
-  driven <- NULL
-  reference <- NULL
-  driven_warnings <- collect_warnings(driven <- fit_once())
-  reference_warnings <- collect_warnings(reference <- fit_through_r_loop(fit_once()))
-
-  expect_gt(length(driven_warnings), 0L)
-  expect_identical(driven_warnings, reference_warnings)
-  expect_identical(loop_outputs(driven), loop_outputs(reference))
+test_that("the Gaussian family solves its interior in double precision", {
+  # paceModelGaussian() passes interior_precision = 1, and the float per-gene
+  # Cholesky is borderline on continuous intensities -- the NaN guard would fire
+  # every iteration. fit_pass1 forces 0 for this family so a caller cannot lose
+  # it. A float interior would show up as re-solve chatter under verbose.
+  set.seed(3)
+  n <- 400L
+  n_genes <- 8L
+  df <- data.frame(celltype = sample(c("A", "B"), n, replace = TRUE),
+                   A = runif(n), B = runif(n), stringsAsFactors = FALSE)
+  values <- matrix(abs(rnorm(n * n_genes, mean = 3)), n, n_genes)
+  colnames(values) <- paste0("p", seq_len(n_genes))
+  counts <- methods::as(methods::as(methods::as(values, "dMatrix"), "generalMatrix"),
+                        "CsparseMatrix")
+  chatter <- utils::capture.output(
+    fit <- fit_pace_mvpql_streaming(
+      Y = counts, X_fixed = matrix(1, n, 1L, dimnames = list(NULL, "(Intercept)")),
+      df = df, re_specs = list(list(group_col = "celltype", formula = ~ 0 + A + B)),
+      family = "gaussian", interior_precision = 1L, n_iter = 4L, min_iter = 2L,
+      n_threads = 2L, verbose = TRUE))
+  expect_false(any(grepl("nan-guard", chatter, fixed = TRUE)))
+  expect_true(all(is.finite(fit$U)))
 })
