@@ -480,6 +480,14 @@ pace_fit_streaming <- function(Y, df, types = NULL,
                                tau_shrinkage = "adaptive",
                                alpha_warmup = 6, early_stop_tol = 2e-2, min_iter = 12L,
                                ## speed option, see fit_pace_mvpql_streaming()
+                               ## The dispersion MLE runs a Brent search per gene over the
+                               ## cells of that gene. alpha is ONE SCALAR per gene, so a
+                               ## million cells is far past the point of diminishing returns,
+                               ## and the search is the single largest term in the fit (45% of
+                               ## wall on breast cancer). Subsampling evenly caps that work at
+                               ## a fixed cost per gene instead of one proportional to n.
+                               ## Inf keeps every cell, which is the historical behaviour.
+                               alpha_max_n = Inf,
                                alpha_zero_collapse = TRUE,
                                alpha_fast_density = TRUE,
                                ## DEPRECATED: the fit keeps the per-cell-type statistics the
@@ -646,7 +654,8 @@ pace_fit_streaming <- function(Y, df, types = NULL,
       tau_shrinkage = tau_shrinkage,
       BPPARAM = BiocParallel::SerialParam(), n_threads = as.integer(threads),
       interior_precision = 1L, chunk_size = as.integer(chunk_size),
-      alpha_warmup = alpha_warmup, alpha_zero_collapse = alpha_zero_collapse,
+      alpha_warmup = alpha_warmup, alpha_max_n = alpha_max_n,
+      alpha_zero_collapse = alpha_zero_collapse,
       alpha_fast_density = alpha_fast_density,
       early_stop_tol = early_stop_tol,
       min_iter = as.integer(min_iter),
