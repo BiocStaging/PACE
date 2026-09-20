@@ -10,6 +10,9 @@
 
 #include "core/random_design.hpp"
 #include "core/stage_timer.hpp"
+#include "core/thread_pool.hpp"
+
+#include <chrono>
 #include "core/sparse_product.hpp"
 #include "core/count_stats.hpp"
 
@@ -94,7 +97,10 @@ Rcpp::NumericVector pace_stage_times_cpp(bool reset) {
       Rcpp::Named("working_response")           = t.working_response.load(),
       Rcpp::Named("rho_accumulate")             = t.rho.load(),
       Rcpp::Named("dispersion")                 = t.dispersion.load(),
-      Rcpp::Named("ambient_block")              = t.ambient.load());
+      Rcpp::Named("ambient_block")              = t.ambient.load(),
+      Rcpp::Named("dispatches")                 = static_cast<double>(t.dispatches.load()),
+      Rcpp::Named("in_parallel_for")            = t.dispatch_overhead.load());
   if (reset) t.reset();
   return out;
 }
+

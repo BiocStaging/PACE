@@ -322,10 +322,31 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
       Matrix terms_1(n_shared, n_terms_1);
       Matrix terms_2(n_shared, n_terms_2);
       Matrix w_shared(n_shared, n_genes);
-      for (int k = 0; k < n_shared; ++k) {
-        terms_1.row(k) = terms[b1].row(cells[k]);
-        terms_2.row(k) = terms[b2].row(cells[k]);
-        w_shared.row(k) = w.row(cells[k]);
+      // COLUMN at a time, not row at a time. These are column-major, so a row
+      // access strides by n: gathering w one cell at a time touched n_genes
+      // separate cache lines per cell, each 4.9 MB from the last at 1.2M cells,
+      // which is a fresh page every load and nothing the prefetcher can follow.
+      // `cells` is ascending (group cells are filled in ascending order and the
+      // bucketing preserves it), so taking a column at a time walks forward
+      // through one column with a stride of n / n_bucket -- prefetchable, and
+      // page-local.
+      //
+      // Pure data movement: the same values land in the same places, so the
+      // products below see an identical matrix.
+      for (std::int64_t t = 0; t < n_terms_1; ++t) {
+        const T* source = terms[b1].col(t).data();
+        T* target = terms_1.col(t).data();
+        for (int k = 0; k < n_shared; ++k) target[k] = source[cells[k]];
+      }
+      for (std::int64_t t = 0; t < n_terms_2; ++t) {
+        const T* source = terms[b2].col(t).data();
+        T* target = terms_2.col(t).data();
+        for (int k = 0; k < n_shared; ++k) target[k] = source[cells[k]];
+      }
+      for (std::int64_t j = 0; j < n_genes; ++j) {
+        const T* source = w.col(j).data();
+        T* target = w_shared.col(j).data();
+        for (int k = 0; k < n_shared; ++k) target[k] = source[cells[k]];
       }
       Matrix products(n_shared, n_terms_1 * n_terms_2);
       for (int t2 = 0; t2 < n_terms_2; ++t2) {

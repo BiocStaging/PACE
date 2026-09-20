@@ -26,10 +26,15 @@ struct StageTimings {
   std::atomic<double> rho{0.0};
   std::atomic<double> dispersion{0.0};
   std::atomic<double> ambient{0.0};        // the E^tech block, cached or streamed
+  // parallel_for spawns and joins fresh std::threads on every call, so the
+  // dispatch count is a cost in its own right, not just bookkeeping.
+  std::atomic<long long> dispatches{0};
+  std::atomic<double> dispatch_overhead{0.0};
 
   void reset() {
     solve_stage1 = 0.0; solve_stage2 = 0.0; solve_stage3 = 0.0;
     eta = 0.0; working_response = 0.0; rho = 0.0; dispersion = 0.0; ambient = 0.0;
+    dispatches = 0; dispatch_overhead = 0.0;
   }
 };
 

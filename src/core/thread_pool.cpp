@@ -1,5 +1,6 @@
 // thread_pool.cpp -- implementation of pace::parallel_for (see thread_pool.hpp).
 #include "thread_pool.hpp"
+#include "stage_timer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -84,6 +85,11 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
     workers_done.notify_all();
   };
 
+  // Spawn and join, timed: this is what a persistent pool would remove.
+  stage_timings().dispatches.fetch_add(1, std::memory_order_relaxed);
+  const std::chrono::steady_clock::time_point dispatch_start =
+      std::chrono::steady_clock::now();
+
   std::vector<std::thread> threads;
   threads.reserve(n_workers);
   try {
@@ -115,6 +121,15 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
     }
   }
   for (auto& thread : threads) thread.join();
+  {
+    const std::chrono::duration<double> spent =
+        std::chrono::steady_clock::now() - dispatch_start;
+    std::atomic<double>& total = stage_timings().dispatch_overhead;
+    double current = total.load(std::memory_order_relaxed);
+    while (!total.compare_exchange_weak(current, current + spent.count(),
+                                        std::memory_order_relaxed)) {
+    }
+  }
 
   if (!error_message.empty()) return Status::failure(StatusCode::internal_error, error_message);
   if (was_interrupted) return Status::failure(StatusCode::interrupted, "interrupted by the user");
