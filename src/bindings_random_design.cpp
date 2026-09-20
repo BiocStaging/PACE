@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/random_design.hpp"
+#include "core/stage_timer.hpp"
 #include "core/sparse_product.hpp"
 #include "core/count_stats.hpp"
 
@@ -76,3 +77,24 @@ Rcpp::List pace_random_design_block_cpp(const Rcpp::NumericMatrix& x_terms,
                             Rcpp::Named("group_start") = group_start);
 }
 
+
+// Where a fit spends its wall clock, by stage.
+//
+// PACE reports one number per iteration and nothing below it, so every question
+// about the split has had to be answered by arithmetic on flop counts and cache
+// traffic. That has been wrong often enough to be worth a few clock reads.
+// [[Rcpp::export]]
+Rcpp::NumericVector pace_stage_times_cpp(bool reset) {
+  pace::StageTimings& t = pace::stage_timings();
+  Rcpp::NumericVector out = Rcpp::NumericVector::create(
+      Rcpp::Named("solve_stage1_group_tensors") = t.solve_stage1.load(),
+      Rcpp::Named("solve_stage2_cross_tensors") = t.solve_stage2.load(),
+      Rcpp::Named("solve_stage3_per_gene")      = t.solve_stage3.load(),
+      Rcpp::Named("eta_block")                  = t.eta.load(),
+      Rcpp::Named("working_response")           = t.working_response.load(),
+      Rcpp::Named("rho_accumulate")             = t.rho.load(),
+      Rcpp::Named("dispersion")                 = t.dispersion.load(),
+      Rcpp::Named("ambient_block")              = t.ambient.load());
+  if (reset) t.reset();
+  return out;
+}

@@ -3,7 +3,7 @@
 PKG_LIBS = -pthread
 
 OBJECTS = RcppExports.o bindings.o \
-          core/thread_pool.o core/neighbourhood.o core/count_stats.o \
+          core/thread_pool.o core/stage_timer.o core/neighbourhood.o core/count_stats.o \
           core/statistics.o core/decomposition.o \
           core/irls_chunk.o core/hyperparameters.o core/gene_solve.o \
           core/dispersion.o core/preprocess.o \

@@ -910,6 +910,17 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_stage_times_cpp
+Rcpp::NumericVector pace_stage_times_cpp(bool reset);
+RcppExport SEXP _PACE_pace_stage_times_cpp(SEXP resetSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< bool >::type reset(resetSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_stage_times_cpp(reset));
+    return rcpp_result_gen;
+END_RCPP
+}
 
 static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_neighbour_kernels_cpp", (DL_FUNC) &_PACE_pace_neighbour_kernels_cpp, 9},
@@ -962,6 +973,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_working_response_chunk_cpp", (DL_FUNC) &_PACE_pace_working_response_chunk_cpp, 22},
     {"_PACE_pace_irls_driver_cpp", (DL_FUNC) &_PACE_pace_irls_driver_cpp, 43},
     {"_PACE_pace_random_design_block_cpp", (DL_FUNC) &_PACE_pace_random_design_block_cpp, 3},
+    {"_PACE_pace_stage_times_cpp", (DL_FUNC) &_PACE_pace_stage_times_cpp, 1},
     {NULL, NULL, 0}
 };
 

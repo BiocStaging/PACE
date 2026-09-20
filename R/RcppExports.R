@@ -201,3 +201,7 @@ pace_random_design_block_cpp <- function(x_terms, cell_group, n_groups) {
     .Call(`_PACE_pace_random_design_block_cpp`, x_terms, cell_group, n_groups)
 }
 
+pace_stage_times_cpp <- function(reset) {
+    .Call(`_PACE_pace_stage_times_cpp`, reset)
+}
+

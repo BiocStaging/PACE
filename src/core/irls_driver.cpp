@@ -2,6 +2,7 @@
 #include "fp_no_contract.hpp"  // must precede the arithmetic below
 
 #include "irls_driver.hpp"
+#include "stage_timer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -154,6 +155,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
     // product per chunk for nothing on every iteration 1.
     GeneBlock chunk_ambient;
     if (!gaussian && !seed_iteration) {
+      const ScopedStageTimer ambient_clock(stage_timings().ambient);
       const Status ambient_status =
           ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
       if (!ambient_status.is_ok()) return ambient_status;
@@ -169,6 +171,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
       Span<const double> eta_span;
       if (!seed_iteration) {
         eta_scratch.resize(static_cast<std::size_t>(n * len));
+            const ScopedStageTimer eta_clock(stage_timings().eta);
         const Status eta_status =
             eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, u_in,
                       Span<const int>(chunk_genes.data() + start, len), n, n_genes,
@@ -176,6 +179,7 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
         if (!eta_status.is_ok()) return eta_status;
         eta_span = Span<const double>(eta_scratch.data(), n * len);
       }
+      const ScopedStageTimer working_clock(stage_timings().working_response);
       const Status status = working_response(
           eta_span, shifted_block(counts, first + start), shifted_block(chunk_ambient, start),
           offset, rho, Span<const double>(alpha.data + first + start, len), sample_weight, nb2,
@@ -344,6 +348,7 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
     // pass rather than once per sub-block.
     GeneBlock chunk_ambient;
     {
+      const ScopedStageTimer ambient_clock(stage_timings().ambient);
       const Status ambient_status =
           ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
       if (!ambient_status.is_ok()) return ambient_status;
@@ -352,14 +357,17 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
       chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
     }
     const Span<const int> genes(chunk_genes.data(), m_chunk);
+    const ScopedStageTimer eta_clock(stage_timings().eta);
     Status status = eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, u_in, genes, n, n_genes,
                               Span<double>(eta.data(), n * m_chunk), n_threads, interrupted);
     if (!status.is_ok()) return status;
     if (have_previous) {
+      const ScopedStageTimer eta_clock(stage_timings().eta);
       status = eta_block(x1, x1_is_unit, x_fixed, p, prev_beta, z, prev_u, genes, n, n_genes,
                          Span<double>(previous_eta.data(), n * m_chunk), n_threads, interrupted);
       if (!status.is_ok()) return status;
     }
+    const ScopedStageTimer rho_clock(stage_timings().rho);
     status = rho_accumulate(
         Span<const double>(eta.data(), n * m_chunk),
         have_previous ? Span<const double>(previous_eta.data(), n * m_chunk) : empty_doubles(),
@@ -394,6 +402,7 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     GeneBlock chunk_ambient;
     // Gaussian takes the residual-variance branch below and never reads this.
     if (!gaussian) {
+      const ScopedStageTimer ambient_clock(stage_timings().ambient);
       const Status ambient_status =
           ambient_block(ambient, first, m_chunk, n_threads, interrupted, &chunk_ambient);
       if (!ambient_status.is_ok()) return ambient_status;
@@ -401,6 +410,7 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     for (std::int64_t j = 0; j < m_chunk; ++j) {
       chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
     }
+        const ScopedStageTimer eta_clock(stage_timings().eta);
     const Status eta_status =
         eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, u_in,
                   Span<const int>(chunk_genes.data(), m_chunk), n, n_genes,
@@ -410,6 +420,7 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     if (gaussian) {
       // The identity-link dispersion step: the residual variance, floored where
       // the R engine's pmax(sigma2_new, 1e-8) floors it. No density, no search.
+      const ScopedStageTimer dispersion_clock(stage_timings().dispersion);
       const Status sigma2_status = residual_variance_chunk(
           Span<const double>(eta.data(), n * m_chunk), shifted_block(counts, first), offset, 1e-8,
           n, m_chunk, Span<double>(alpha.data + first, m_chunk), n_threads, interrupted);
@@ -418,6 +429,7 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     }
 
     std::int64_t chunk_noninteger = 0;
+    const ScopedStageTimer dispersion_clock(stage_timings().dispersion);
     const Status status = dispersion_chunk(
         Span<const double>(eta.data(), n * m_chunk), shifted_block(counts, first),
         chunk_ambient, offset, rho, nb2, zero_collapse, max_cells, density,
@@ -463,6 +475,7 @@ Status contamination_row_sums(const IrlsLoopInputs& inputs, const IrlsLoopOption
     for (std::int64_t j = 0; j < m_chunk; ++j) {
       chunk_genes[static_cast<std::size_t>(j)] = static_cast<int>(first + j);
     }
+    const ScopedStageTimer eta_clock(stage_timings().eta);
     const Status eta_status = eta_block(
         inputs.x1, inputs.x1_is_unit, inputs.x_fixed, inputs.p,
         Span<const double>(beta.data(), static_cast<std::int64_t>(beta.size())), inputs.z,
@@ -472,6 +485,7 @@ Status contamination_row_sums(const IrlsLoopInputs& inputs, const IrlsLoopOption
     if (!eta_status.is_ok()) return eta_status;
     GeneBlock chunk_ambient;
     {
+      const ScopedStageTimer ambient_clock(stage_timings().ambient);
       const Status ambient_status = ambient_block(inputs.ambient, first, m_chunk,
                                                   options.n_threads, interrupted, &chunk_ambient);
       if (!ambient_status.is_ok()) return ambient_status;

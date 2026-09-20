@@ -6,6 +6,9 @@
 // the code, not its numbers: no R types cross into it, and the two parallel
 // loops run on the deterministic std::thread pool instead of OpenMP.
 #include "gene_solve.hpp"
+#include "stage_timer.hpp"
+
+#include <memory>
 
 #include <Eigen/Dense>
 
@@ -91,6 +94,8 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
   // own workers carry the parallelism, and Eigen's blocking heuristic changes
   // with its thread count. See the note at stage 2 for what that cost us.
   const EigenThreads serial_eigen(1);
+  std::unique_ptr<ScopedStageTimer> stage_clock(
+      new ScopedStageTimer(stage_timings().solve_stage1));
   std::vector<std::vector<Matrix>> ztwz(n_blocks);
   std::vector<std::vector<Matrix>> xtwz(n_blocks);
   std::vector<std::vector<Matrix>> ztwz_rhs(n_blocks);
@@ -231,6 +236,8 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
     }
   }
 
+  stage_clock.reset(new ScopedStageTimer(stage_timings().solve_stage2));
+
   // ---- Stage 2: the cross-block tensors, over the cells two groups share ----
   // On the calling thread, and -- unlike the kernel this replaced -- with Eigen
   // still pinned to one thread.
@@ -341,6 +348,8 @@ Status solve_impl(Span<const double> x_fixed_in, std::int64_t n, std::int64_t p,
   const Status cross_status = parallel_for(static_cast<std::int64_t>(work.size()),
                                            n_threads, 1, cross_body, interrupted);
   if (!cross_status.is_ok()) return cross_status;
+
+  stage_clock.reset(new ScopedStageTimer(stage_timings().solve_stage3));
 
   // ---- Stage 3: one solve per gene ----
   const T missing = std::numeric_limits<T>::quiet_NaN();
