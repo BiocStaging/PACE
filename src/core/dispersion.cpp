@@ -227,22 +227,23 @@ double brent_root(double lower, double upper, double tolerance, int max_iteratio
 // For small integer x that is exactly sum_{k<x} log(s + k), which is both
 // cheaper than two lgamma calls and better conditioned, since it never forms
 // the difference of two large values. Counts on these panels are mostly 0-3.
-double nb1_negative_loglik_fast(const double* y, const double* mean, std::int64_t used,
+//
+// S_mu, S_x and the addresses of the non-zero cells do not move with alpha, so
+// the caller computes them ONCE per gene and passes them in -- see
+// dispersion_mle(). Brent evaluates this about 25 times per gene, and this loop
+// therefore no longer touches the zero-count cells at all, which on these
+// panels are most of them.
+double nb1_negative_loglik_fast(const double* nonzero_count, const double* nonzero_mean,
+                                std::int64_t n_nonzero, double sum_count, double sum_mean,
                                 double log_alpha) {
   const double a = std::exp(log_alpha);
   const double log1p_a = std::log1p(a);
   const double log_a = log_alpha;          // log(exp(log_alpha)) without the round trip
   const std::int64_t small_count_limit = 8;
   long double total = 0.0L;
-  long double count_sum = 0.0L;
-  long double mean_sum = 0.0L;
-  for (std::int64_t i = 0; i < used; ++i) {
-    const double count = y[static_cast<std::size_t>(i)];
-    const double value = mean[static_cast<std::size_t>(i)];
-    mean_sum += value;
-    if (count == 0) continue;              // its two lgamma terms cancel exactly
-    count_sum += count;
-    const double size = value / a;
+  for (std::int64_t i = 0; i < n_nonzero; ++i) {
+    const double count = nonzero_count[static_cast<std::size_t>(i)];
+    const double size = nonzero_mean[static_cast<std::size_t>(i)] / a;
     const std::int64_t whole = static_cast<std::int64_t>(count);
     if (static_cast<double>(whole) == count && whole <= small_count_limit) {
       double ratio = 0.0;
@@ -254,10 +255,8 @@ double nb1_negative_loglik_fast(const double* y, const double* mean, std::int64_
   }
   // The parts that depend on the cells only through their sums. Zero counts
   // need no special case here: their whole contribution IS -(mu/a) log1p(a),
-  // which `mean_sum` already carries, so the caller's zero_collapse identity is
+  // which `sum_mean` already carries, so the caller's zero_collapse identity is
   // subsumed rather than applied on top.
-  const double sum_mean = static_cast<double>(mean_sum);
-  const double sum_count = static_cast<double>(count_sum);
   const double result = static_cast<double>(total) + sum_count * (log_a - log1p_a)
                         - sum_mean * log1p_a / a;
   return -result;
@@ -303,18 +302,64 @@ double dispersion_mle(Span<const double> counts, Span<const double> mu, bool nb2
   const double mu_zero_sum = static_cast<double>(zero_mean_sum);
   const bool collapse = zero_collapse && !nb2 && n_zero > 0;
 
+  // Everything in the objective that does not move with alpha, computed once
+  // rather than on each of Brent's ~25 evaluations: the two sums the closed
+  // form needs, and the non-zero cells themselves. Both paths that get here
+  // touch only the non-zero cells inside the search -- the closed form because
+  // a zero count contributes nothing but its mean, and the collapsed density
+  // because the caller sums the zero block in closed form -- so gathering them
+  // once turns ~25 walks over every cell into ~25 walks over the few that
+  // carry a count.
+  //
+  // The sums accumulate in the same order, over the same cells, as the loop
+  // they were lifted out of, so the objective is unchanged to the bit.
+  const bool gather_nonzero = collapse || (fast_density && !nb2);
+  std::vector<double> nonzero_count;
+  std::vector<double> nonzero_mean;
+  long double count_total = 0.0L;
+  long double mean_total = 0.0L;
+  if (gather_nonzero) {
+    std::int64_t n_nonzero = 0;
+    for (std::int64_t i = 0; i < used; ++i) {
+      if (y[static_cast<std::size_t>(i)] != 0) n_nonzero += 1;
+    }
+    nonzero_count.reserve(static_cast<std::size_t>(n_nonzero));
+    nonzero_mean.reserve(static_cast<std::size_t>(n_nonzero));
+    for (std::int64_t i = 0; i < used; ++i) {
+      const double count = y[static_cast<std::size_t>(i)];
+      const double value = mean[static_cast<std::size_t>(i)];
+      mean_total += value;                 // over EVERY cell, zeros included
+      if (count == 0) continue;
+      count_total += count;
+      nonzero_count.push_back(count);
+      nonzero_mean.push_back(value);
+    }
+  }
+  const double sum_count = static_cast<double>(count_total);
+  const double sum_mean = static_cast<double>(mean_total);
+  const std::int64_t n_nonzero = static_cast<std::int64_t>(nonzero_count.size());
+
   auto negative_log_likelihood = [&](double log_alpha) {
     if (fast_density && !nb2) {
-      return nb1_negative_loglik_fast(y.data(), mean.data(), used, log_alpha);
+      return nb1_negative_loglik_fast(nonzero_count.data(), nonzero_mean.data(), n_nonzero,
+                                      sum_count, sum_mean, log_alpha);
     }
     const double a = std::exp(log_alpha);
     long double total = 0.0L;
-    for (std::int64_t i = 0; i < used; ++i) {
-      const double count = y[static_cast<std::size_t>(i)];
-      if (collapse && count == 0) continue;
-      const double value = mean[static_cast<std::size_t>(i)];
-      const double size = nb2 ? 1 / a : value / a;
-      total += density(count, size, value);
+    if (collapse) {
+      // The zero cells are the `mu_zero_sum` term below, so the density is
+      // called only on the rest. `collapse` implies !nb2, hence size = mu/a.
+      for (std::int64_t i = 0; i < n_nonzero; ++i) {
+        const double value = nonzero_mean[static_cast<std::size_t>(i)];
+        total += density(nonzero_count[static_cast<std::size_t>(i)], value / a, value);
+      }
+    } else {
+      for (std::int64_t i = 0; i < used; ++i) {
+        const double count = y[static_cast<std::size_t>(i)];
+        const double value = mean[static_cast<std::size_t>(i)];
+        const double size = nb2 ? 1 / a : value / a;
+        total += density(count, size, value);
+      }
     }
     double result = static_cast<double>(total);
     if (collapse) result = result - mu_zero_sum * std::log1p(a) / a;

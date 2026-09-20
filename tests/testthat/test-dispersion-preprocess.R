@@ -136,3 +136,44 @@ test_that("the anchor decision reproduces the R comparison it replaces", {
   expect_identical(unname(fitted$mask), unname(reference))
   expect_identical(fitted$n_anchor, as.integer(rowSums(reference)))
 })
+
+test_that("every dispersion configuration is pinned to the bit", {
+  # A standing bit-identity gate, added because an audit of the F4 hoist found
+  # the package had none for this file. The two gates that look like one cover
+  # less than they appear to:
+  #   - the frozen md5 fits in test-irls-driver.R exercise ONE configuration,
+  #     the default nb2 = FALSE, zero_collapse = TRUE, fast_density = TRUE,
+  #     alpha_max_n = Inf, so they say nothing about the other branches -- and
+  #     their reference .rds is gitignored, so on a fresh clone they skip;
+  #   - the comparisons above are tolerance = 1e-4 and 1e-6, both LOOSER than
+  #     Brent's own resolution on log alpha (DBL_EPSILON^0.25, about 1.2e-4), so
+  #     a genuine last-bit change in the collapsed density path passes silently.
+  #
+  # These are not a reference implementation's answers, they are this one's,
+  # frozen from the build proven identical to the one before the hoist. They pin
+  # the branches against each other's drift: the fast closed form, the collapsed
+  # density, the plain density, nb2, and the subsampling path, which is off in
+  # the canonical fits (alpha_max_n = Inf) and so is covered by nothing else.
+  #
+  # The literals are hexadecimal because a double does NOT reliably survive the
+  # round trip through sprintf("%.17g") -- two of these six came back one ulp
+  # out. R parses a hex float exactly, so the constant in the source IS the bit
+  # pattern that was measured. Regenerate with sprintf("%a", value) after a
+  # DELIBERATE change, and say in the commit why each value that moved moved.
+  set.seed(23)
+  n <- 4000L
+  mu <- exp(stats::rnorm(n, -0.8, 1.1))
+  y <- stats::rnbinom(n, size = mu / 0.6, mu = mu)
+  # the collapse branch only exists when there are zeros to collapse
+  expect_gt(sum(y == 0), 2000L)
+
+  mle <- function(nb2, zero_collapse, max_cells, fast_density) {
+    PACE:::pace_dispersion_mle_cpp(y, mu, nb2, zero_collapse, max_cells, fast_density)
+  }
+  expect_identical(mle(FALSE, TRUE,  Inf,  TRUE),  0x1.205a74370854p-1)   # fast closed form
+  expect_identical(mle(FALSE, TRUE,  Inf,  FALSE), 0x1.205a7436f5edbp-1)  # collapsed density
+  expect_identical(mle(FALSE, FALSE, Inf,  FALSE), 0x1.205a743707955p-1)  # plain density
+  expect_identical(mle(TRUE,  FALSE, Inf,  FALSE), 0x1.c170b062697ep-2)   # nb2
+  expect_identical(mle(FALSE, TRUE,  1000, FALSE), 0x1.f190aa5fc7f63p-2)  # subsampled, slow
+  expect_identical(mle(FALSE, TRUE,  1000, TRUE),  0x1.f190aa601f8fep-2)  # subsampled, fast
+})
