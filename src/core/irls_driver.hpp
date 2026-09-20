@@ -127,9 +127,14 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
 //
 // Without `have_previous` the previous linear predictor is the solver's own
 // seed, log(max(y, 0.5)) - offset, as rho_accumulate() builds it.
+//
+// `solve_blocks` is Z seen as the blocks that built it, which lets eta_block()
+// take its fast path; nullptr makes it walk Z as a CSC instead, which is all a
+// caller without the block structure can do. The two agree to the bit.
 Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
-                std::int64_t p, const CscView& z, Span<const double> beta_in,
-                Span<const double> u_in, Span<const double> prev_beta, Span<const double> prev_u,
+                std::int64_t p, const CscView& z, const std::vector<SolveBlock>* solve_blocks,
+                Span<const double> beta_in, Span<const double> u_in,
+                Span<const double> prev_beta, Span<const double> prev_u,
                 bool have_previous, const GeneBlock& counts, const AmbientSource& ambient,
                 Span<const double> offset, Span<const double> rho, Span<const double> alpha,
                 Span<const double> mask, Span<const int> mask_index, std::int64_t n_mask_rows,
@@ -142,9 +147,10 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
 // or, on the Gaussian path, the per-gene residual variance. eta is a buffer
 // reused across chunks rather than an n x chunk R matrix built and dropped per
 // chunk. `n_noninteger` counts the genes whose counts are not whole numbers,
-// which the caller warns about.
+// which the caller warns about. `solve_blocks` is as in rho_pass().
 Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
-                       std::int64_t p, const CscView& z, Span<const double> beta_in,
+                       std::int64_t p, const CscView& z,
+                       const std::vector<SolveBlock>* solve_blocks, Span<const double> beta_in,
                        Span<const double> u_in, const GeneBlock& counts, const AmbientSource& ambient,
                        Span<const double> offset, Span<const double> rho, bool nb2, bool gaussian,
                        bool zero_collapse, double max_cells, LogDensity density, bool fast_density,

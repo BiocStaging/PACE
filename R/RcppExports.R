@@ -173,6 +173,10 @@ pace_eta_block_cpp <- function(x1, x1_is_unit, x_fixed, p, b, z_design, u, genes
     .Call(`_PACE_pace_eta_block_cpp`, x1, x1_is_unit, x_fixed, p, b, z_design, u, genes, n_threads)
 }
 
+pace_eta_block_blocked_cpp <- function(x1, x1_is_unit, x_fixed, p, b, z_design, blocks, terms_list, cell_group_list, u, genes, cell_panel, n_threads) {
+    .Call(`_PACE_pace_eta_block_blocked_cpp`, x1, x1_is_unit, x_fixed, p, b, z_design, blocks, terms_list, cell_group_list, u, genes, cell_panel, n_threads)
+}
+
 pace_rho_pass_cpp <- function(x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, prev_b, prev_u, have_previous, counts, ambient, offset, rho, alpha, mask, mask_index, nb2, want_tail_counts, n_cells, chunk_size, n_threads) {
     .Call(`_PACE_pace_rho_pass_cpp`, x1, x1_is_unit, x_fixed, p, z_design, b_in, u_in, prev_b, prev_u, have_previous, counts, ambient, offset, rho, alpha, mask, mask_index, nb2, want_tail_counts, n_cells, chunk_size, n_threads)
 }

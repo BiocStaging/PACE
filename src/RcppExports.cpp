@@ -698,6 +698,29 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_eta_block_blocked_cpp
+Rcpp::NumericMatrix pace_eta_block_blocked_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::NumericMatrix& b, const Rcpp::S4& z_design, const Rcpp::List& blocks, const Rcpp::List& terms_list, const Rcpp::List& cell_group_list, const Rcpp::NumericMatrix& u, const Rcpp::IntegerVector& genes, int cell_panel, int n_threads);
+RcppExport SEXP _PACE_pace_eta_block_blocked_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP pSEXP, SEXP bSEXP, SEXP z_designSEXP, SEXP blocksSEXP, SEXP terms_listSEXP, SEXP cell_group_listSEXP, SEXP uSEXP, SEXP genesSEXP, SEXP cell_panelSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::NumericVector& >::type x1(x1SEXP);
+    Rcpp::traits::input_parameter< bool >::type x1_is_unit(x1_is_unitSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type x_fixed(x_fixedSEXP);
+    Rcpp::traits::input_parameter< int >::type p(pSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type b(bSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type z_design(z_designSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type blocks(blocksSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type terms_list(terms_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::List& >::type cell_group_list(cell_group_listSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::NumericMatrix& >::type u(uSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type genes(genesSEXP);
+    Rcpp::traits::input_parameter< int >::type cell_panel(cell_panelSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_eta_block_blocked_cpp(x1, x1_is_unit, x_fixed, p, b, z_design, blocks, terms_list, cell_group_list, u, genes, cell_panel, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // pace_rho_pass_cpp
 Rcpp::List pace_rho_pass_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit, const Rcpp::NumericMatrix& x_fixed, int p, const Rcpp::S4& z_design, const Rcpp::NumericMatrix& b_in, const Rcpp::NumericMatrix& u_in, const Rcpp::NumericMatrix& prev_b, const Rcpp::NumericMatrix& prev_u, bool have_previous, const Rcpp::S4& counts, const Rcpp::S4& ambient, const Rcpp::NumericVector& offset, const Rcpp::NumericVector& rho, const Rcpp::NumericVector& alpha, const Rcpp::NumericMatrix& mask, const Rcpp::IntegerVector& mask_index, bool nb2, bool want_tail_counts, int n_cells, int chunk_size, int n_threads);
 RcppExport SEXP _PACE_pace_rho_pass_cpp(SEXP x1SEXP, SEXP x1_is_unitSEXP, SEXP x_fixedSEXP, SEXP pSEXP, SEXP z_designSEXP, SEXP b_inSEXP, SEXP u_inSEXP, SEXP prev_bSEXP, SEXP prev_uSEXP, SEXP have_previousSEXP, SEXP countsSEXP, SEXP ambientSEXP, SEXP offsetSEXP, SEXP rhoSEXP, SEXP alphaSEXP, SEXP maskSEXP, SEXP mask_indexSEXP, SEXP nb2SEXP, SEXP want_tail_countsSEXP, SEXP n_cellsSEXP, SEXP chunk_sizeSEXP, SEXP n_threadsSEXP) {
@@ -966,6 +989,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_anchor_mask_cpp", (DL_FUNC) &_PACE_pace_anchor_mask_cpp, 3},
     {"_PACE_pace_normalise_rows_to_max_cpp", (DL_FUNC) &_PACE_pace_normalise_rows_to_max_cpp, 1},
     {"_PACE_pace_eta_block_cpp", (DL_FUNC) &_PACE_pace_eta_block_cpp, 9},
+    {"_PACE_pace_eta_block_blocked_cpp", (DL_FUNC) &_PACE_pace_eta_block_blocked_cpp, 13},
     {"_PACE_pace_rho_pass_cpp", (DL_FUNC) &_PACE_pace_rho_pass_cpp, 22},
     {"_PACE_pace_marginal_variance_cpp", (DL_FUNC) &_PACE_pace_marginal_variance_cpp, 5},
     {"_PACE_pace_dispersion_pass_cpp", (DL_FUNC) &_PACE_pace_dispersion_pass_cpp, 19},

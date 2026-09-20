@@ -1103,10 +1103,65 @@ Rcpp::NumericMatrix pace_eta_block_cpp(const Rcpp::NumericVector& x1, bool x1_is
 
   Rcpp::NumericMatrix eta(n, n_chunk);
   const pace::Status status = pace::eta_block(
-      double_span(x1), x1_is_unit, double_span(x_fixed), p, double_span(b), z,
+      double_span(x1), x1_is_unit, double_span(x_fixed), p, double_span(b), z, nullptr,
       double_span(u), pace::Span<const int>(genes0.data(), n_chunk), n, n_genes_total,
-      pace::Span<double>(eta.begin(), n * n_chunk), n_threads, user_interrupted);
+      pace::Span<double>(eta.begin(), n * n_chunk), 0, n_threads, user_interrupted);
   raise_if_failed(status, "eta block");
+  return eta;
+}
+
+// The same eta, taken through the block structure instead of through Z's
+// compressed columns (see core/linear_predictor.hpp). Bit-identical to
+// pace_eta_block_cpp() and much cheaper: the design is read once per gene chunk
+// rather than once per gene. Exposed so that the equality can be tested
+// directly and the cell panel measured, rather than only through a whole fit.
+//
+// `blocks` carries col_offset / K_terms / K_groups and `cell_group_list` is
+// 1-based, both as build_random_design_multi() produced them. `cell_panel` of 0
+// lets the core choose.
+// [[Rcpp::export]]
+Rcpp::NumericMatrix pace_eta_block_blocked_cpp(const Rcpp::NumericVector& x1, bool x1_is_unit,
+                                               const Rcpp::NumericMatrix& x_fixed, int p,
+                                               const Rcpp::NumericMatrix& b,
+                                               const Rcpp::S4& z_design,
+                                               const Rcpp::List& blocks,
+                                               const Rcpp::List& terms_list,
+                                               const Rcpp::List& cell_group_list,
+                                               const Rcpp::NumericMatrix& u,
+                                               const Rcpp::IntegerVector& genes, int cell_panel,
+                                               int n_threads) {
+  const CscHolder z_holder(z_design);
+  const std::int64_t n = z_holder.view.n_rows;
+  const std::int64_t n_chunk = genes.size();
+  const std::int64_t n_genes_total = b.ncol();
+
+  const int n_blocks = blocks.size();
+  std::vector<Rcpp::NumericMatrix> terms(static_cast<std::size_t>(n_blocks));
+  std::vector<Rcpp::IntegerVector> cell_group(static_cast<std::size_t>(n_blocks));
+  std::vector<pace::SolveBlock> core_blocks(static_cast<std::size_t>(n_blocks));
+  for (int block_index = 0; block_index < n_blocks; ++block_index) {
+    const std::size_t slot = static_cast<std::size_t>(block_index);
+    const Rcpp::List block = blocks[block_index];
+    core_blocks[slot].col_offset = Rcpp::as<int>(block["col_offset"]);
+    core_blocks[slot].n_terms = Rcpp::as<int>(block["K_terms"]);
+    core_blocks[slot].n_groups = Rcpp::as<int>(block["K_groups"]);
+    terms[slot] = Rcpp::as<Rcpp::NumericMatrix>(terms_list[block_index]);
+    cell_group[slot] = Rcpp::as<Rcpp::IntegerVector>(cell_group_list[block_index]);
+    core_blocks[slot].terms = const_span(terms[slot]);
+    core_blocks[slot].cell_group = int_span(cell_group[slot]);
+  }
+
+  // R hands us 1-based gene numbers; the core works 0-based.
+  std::vector<int> genes0(static_cast<std::size_t>(n_chunk));
+  for (std::int64_t j = 0; j < n_chunk; ++j) genes0[static_cast<std::size_t>(j)] = genes[j] - 1;
+
+  Rcpp::NumericMatrix eta(n, n_chunk);
+  const pace::Status status = pace::eta_block(
+      double_span(x1), x1_is_unit, double_span(x_fixed), p, double_span(b), z_holder.view,
+      &core_blocks, double_span(u), pace::Span<const int>(genes0.data(), n_chunk), n,
+      n_genes_total, pace::Span<double>(eta.begin(), n * n_chunk), cell_panel, n_threads,
+      user_interrupted);
+  raise_if_failed(status, "eta block (blocked)");
   return eta;
 }
 
@@ -1138,8 +1193,8 @@ Rcpp::List pace_rho_pass_cpp(
   std::int64_t n_finite = 0;
   std::int64_t n_nonfinite = 0;
   const pace::Status status = pace::rho_pass(
-      double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, const_span(b_in),
-      const_span(u_in), const_span(prev_b), const_span(prev_u), have_previous,
+      double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, nullptr,
+      const_span(b_in), const_span(u_in), const_span(prev_b), const_span(prev_u), have_previous,
       gene_block(count_holder, 1), cached_ambient(ambient_holder, 1), double_span(offset),
       double_span(rho), double_span(alpha), const_span(mask), int_span(mask_index), mask.nrow(),
       nb2, n, n_genes_total, chunk_size, out_span(num), out_span(den), &rel_delta_max,
@@ -1190,8 +1245,9 @@ Rcpp::List pace_dispersion_pass_cpp(
   Rcpp::NumericVector alpha(n_genes_total);
   std::int64_t n_noninteger = 0;
   const pace::Status status = pace::dispersion_pass(
-      double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, const_span(b_in),
-      const_span(u_in), gene_block(count_holder, 1), cached_ambient(ambient_holder, 1),
+      double_span(x1), x1_is_unit, const_span(x_fixed), p, z_holder.view, nullptr,
+      const_span(b_in), const_span(u_in), gene_block(count_holder, 1),
+      cached_ambient(ambient_holder, 1),
       double_span(offset), double_span(rho), nb2, gaussian, zero_collapse, max_cells,
       r_log_nbinom, fast_density, n, n_genes_total, chunk_size, out_span(alpha), &n_noninteger,
       n_threads, user_interrupted);
@@ -1323,8 +1379,9 @@ Rcpp::List pace_working_response_chunk_cpp(
         eta_scratch.resize(static_cast<std::size_t>(n * len));
         const pace::Status eta_status = pace::eta_block(
             double_span(x1), x1_is_unit, double_span(x_fixed), p, double_span(b), z_view,
-            double_span(u), pace::Span<const int>(genes0.data() + start, len), n, b.ncol(),
-            pace::Span<double>(eta_scratch.data(), n * len), n_threads, user_interrupted);
+            nullptr, double_span(u), pace::Span<const int>(genes0.data() + start, len), n,
+            b.ncol(), pace::Span<double>(eta_scratch.data(), n * len), 0, n_threads,
+            user_interrupted);
         raise_if_failed(eta_status, "eta block");
         eta_span = pace::Span<const double>(eta_scratch.data(), n * len);
       }

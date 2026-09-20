@@ -173,9 +173,10 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
         eta_scratch.resize(static_cast<std::size_t>(n * len));
             const ScopedStageTimer eta_clock(stage_timings().eta);
         const Status eta_status =
-            eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, u_in,
+            eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, &solve_blocks, u_in,
                       Span<const int>(chunk_genes.data() + start, len), n, n_genes,
-                      Span<double>(eta_scratch.data(), n * len), n_threads, interrupted);
+                      Span<double>(eta_scratch.data(), n * len), /*cell_panel=*/0, n_threads,
+                      interrupted);
         if (!eta_status.is_ok()) return eta_status;
         eta_span = Span<const double>(eta_scratch.data(), n * len);
       }
@@ -316,8 +317,9 @@ Status fit_pass1(Span<const double> x1, bool x1_is_unit, Span<const double> x_fi
 }
 
 Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
-                std::int64_t p, const CscView& z, Span<const double> beta_in,
-                Span<const double> u_in, Span<const double> prev_beta, Span<const double> prev_u,
+                std::int64_t p, const CscView& z, const std::vector<SolveBlock>* solve_blocks,
+                Span<const double> beta_in, Span<const double> u_in,
+                Span<const double> prev_beta, Span<const double> prev_u,
                 bool have_previous, const GeneBlock& counts, const AmbientSource& ambient,
                 Span<const double> offset, Span<const double> rho, Span<const double> alpha,
                 Span<const double> mask, Span<const int> mask_index, std::int64_t n_mask_rows,
@@ -358,13 +360,15 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
     }
     const Span<const int> genes(chunk_genes.data(), m_chunk);
     const ScopedStageTimer eta_clock(stage_timings().eta);
-    Status status = eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, u_in, genes, n, n_genes,
-                              Span<double>(eta.data(), n * m_chunk), n_threads, interrupted);
+    Status status = eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, solve_blocks, u_in, genes,
+                              n, n_genes, Span<double>(eta.data(), n * m_chunk), /*cell_panel=*/0,
+                              n_threads, interrupted);
     if (!status.is_ok()) return status;
     if (have_previous) {
       const ScopedStageTimer eta_clock(stage_timings().eta);
-      status = eta_block(x1, x1_is_unit, x_fixed, p, prev_beta, z, prev_u, genes, n, n_genes,
-                         Span<double>(previous_eta.data(), n * m_chunk), n_threads, interrupted);
+      status = eta_block(x1, x1_is_unit, x_fixed, p, prev_beta, z, solve_blocks, prev_u, genes, n,
+                         n_genes, Span<double>(previous_eta.data(), n * m_chunk), /*cell_panel=*/0,
+                         n_threads, interrupted);
       if (!status.is_ok()) return status;
     }
     const ScopedStageTimer rho_clock(stage_timings().rho);
@@ -381,7 +385,8 @@ Status rho_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fix
 }
 
 Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double> x_fixed,
-                       std::int64_t p, const CscView& z, Span<const double> beta_in,
+                       std::int64_t p, const CscView& z,
+                       const std::vector<SolveBlock>* solve_blocks, Span<const double> beta_in,
                        Span<const double> u_in, const GeneBlock& counts, const AmbientSource& ambient,
                        Span<const double> offset, Span<const double> rho, bool nb2, bool gaussian,
                        bool zero_collapse, double max_cells, LogDensity density, bool fast_density,
@@ -412,9 +417,9 @@ Status dispersion_pass(Span<const double> x1, bool x1_is_unit, Span<const double
     }
         const ScopedStageTimer eta_clock(stage_timings().eta);
     const Status eta_status =
-        eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, u_in,
+        eta_block(x1, x1_is_unit, x_fixed, p, beta_in, z, solve_blocks, u_in,
                   Span<const int>(chunk_genes.data(), m_chunk), n, n_genes,
-                  Span<double>(eta.data(), n * m_chunk), n_threads, interrupted);
+                  Span<double>(eta.data(), n * m_chunk), /*cell_panel=*/0, n_threads, interrupted);
     if (!eta_status.is_ok()) return eta_status;
 
     if (gaussian) {
@@ -479,9 +484,9 @@ Status contamination_row_sums(const IrlsLoopInputs& inputs, const IrlsLoopOption
     const Status eta_status = eta_block(
         inputs.x1, inputs.x1_is_unit, inputs.x_fixed, inputs.p,
         Span<const double>(beta.data(), static_cast<std::int64_t>(beta.size())), inputs.z,
-        Span<const double>(u.data(), static_cast<std::int64_t>(u.size())),
+        inputs.solve_blocks, Span<const double>(u.data(), static_cast<std::int64_t>(u.size())),
         Span<const int>(chunk_genes.data(), m_chunk), n, n_genes,
-        Span<double>(eta.data(), n * m_chunk), options.n_threads, interrupted);
+        Span<double>(eta.data(), n * m_chunk), /*cell_panel=*/0, options.n_threads, interrupted);
     if (!eta_status.is_ok()) return eta_status;
     GeneBlock chunk_ambient;
     {
@@ -780,7 +785,7 @@ Status run_irls_loop(const IrlsLoopInputs& inputs, const IrlsLoopOptions& option
       std::int64_t pass_finite = 0;
       std::int64_t pass_nonfinite = 0;
       status = rho_pass(
-          inputs.x1, inputs.x1_is_unit, inputs.x_fixed, p, inputs.z,
+          inputs.x1, inputs.x1_is_unit, inputs.x_fixed, p, inputs.z, inputs.solve_blocks,
           Span<const double>(beta.data(), p * n_genes), Span<const double>(u.data(), q * n_genes),
           Span<const double>(have_previous ? previous_beta.data() : beta.data(), p * n_genes),
           Span<const double>(have_previous ? previous_u.data() : u.data(), q * n_genes),
@@ -879,7 +884,7 @@ Status run_irls_loop(const IrlsLoopInputs& inputs, const IrlsLoopOptions& option
     if (update_alpha) {
       std::int64_t n_noninteger = 0;
       status = dispersion_pass(
-          inputs.x1, inputs.x1_is_unit, inputs.x_fixed, p, inputs.z,
+          inputs.x1, inputs.x1_is_unit, inputs.x_fixed, p, inputs.z, inputs.solve_blocks,
           Span<const double>(beta.data(), p * n_genes), Span<const double>(u.data(), q * n_genes),
           inputs.counts, inputs.ambient, inputs.offset, Span<const double>(rho.data(), n),
           options.nb2, options.gaussian, options.zero_collapse, options.alpha_max_cells, density,

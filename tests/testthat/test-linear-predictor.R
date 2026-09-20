@@ -163,3 +163,87 @@ test_that("the Gaussian working response is z = y and a per-gene constant weight
       numeric(0), FALSE, TRUE, FALSE, n, n_genes, 1L),
     "sigma2")
 })
+
+
+## The blocked eta path. Z is never a general sparse matrix: it is a stack of
+## blocks in which every cell belongs to exactly one group, so the same sum can
+## be taken a panel of cells at a time with the genes on the inside, reading the
+## design once per gene chunk instead of once per gene. That reordering is only
+## legitimate if it is EXACT -- the manuscript's fits depend on the bit -- so it
+## is gated against the compressed-column walk with identical(), not a tolerance.
+
+## The design of one block, exactly as build_random_design_multi() builds it.
+random_design_block <- function(n, n_terms, n_groups, offset) {
+  X_terms <- matrix(stats::rnorm(n * n_terms), n, n_terms)
+  cell_group <- sample.int(n_groups, n, replace = TRUE)
+  list(Z = pace_random_design_block_cpp(X_terms, cell_group - 1L, n_groups)$Z,
+       block = list(col_offset = offset, K_terms = n_terms, K_groups = n_groups),
+       terms = X_terms, cell_group = cell_group)
+}
+
+test_that("the blocked eta path is bit-identical to the compressed-column walk", {
+  skip_if_not_installed("Matrix")
+  set.seed(19)
+  shapes <- list(
+    list(c(1L, 1L)),                  # one term, one group: the degenerate block
+    list(c(4L, 3L)),                  # one block, as breast cancer has
+    list(c(5L, 4L), c(1L, 7L)),       # two blocks, as melanoma has
+    list(c(2L, 9L), c(3L, 2L), c(1L, 1L)))
+  for (shape in shapes) {
+    for (n in c(1L, 13L, 700L)) {
+      for (p in c(1L, 2L)) {
+        parts <- list(); offset <- 0L
+        for (s in shape) {
+          parts[[length(parts) + 1L]] <- random_design_block(n, s[1], s[2], offset)
+          offset <- offset + s[1] * s[2]
+        }
+        Z <- do.call(cbind, lapply(parts, `[[`, "Z"))
+        q <- offset
+        n_genes <- 11L
+        B <- matrix(stats::rnorm(p * n_genes), p, n_genes)
+        U <- matrix(stats::rnorm(q * n_genes), q, n_genes)
+        ## Exact zeros are the one place the two paths could differ: the CSC
+        ## walk skips such a column, the blocked path adds 0 * terms instead.
+        U[sample(length(U), floor(length(U) / 3))] <- 0
+        x1 <- stats::rnorm(n)
+        X_fixed <- if (p == 1L) matrix(0, 0, 0) else
+          cbind(x1, matrix(stats::rnorm(n * (p - 1L)), n, p - 1L))
+        for (genes in list(1:3, c(11L, 2L, 7L, 1L, 4L), 1:11)) {
+          for (x1_is_unit in if (p == 1L) c(TRUE, FALSE) else FALSE) {
+            reference <- pace_eta_block_cpp(if (x1_is_unit) numeric(0) else x1, x1_is_unit,
+                                            X_fixed, p, B, Z, U, as.integer(genes), 1L)
+            for (panel in c(0L, 1L, 2L, 64L, 4096L)) {
+              for (threads in c(1L, 4L)) {
+                got <- pace_eta_block_blocked_cpp(
+                  if (x1_is_unit) numeric(0) else x1, x1_is_unit, X_fixed, p, B, Z,
+                  lapply(parts, `[[`, "block"), lapply(parts, `[[`, "terms"),
+                  lapply(parts, `[[`, "cell_group"), U, as.integer(genes), panel, threads)
+                expect_identical(got, reference)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+})
+
+test_that("the blocked eta path refuses blocks that are not Z's columns", {
+  skip_if_not_installed("Matrix")
+  set.seed(23)
+  n <- 40L; p <- 1L; n_genes <- 3L
+  part <- random_design_block(n, 3L, 4L, 0L)
+  Z <- part$Z
+  B <- matrix(stats::rnorm(p * n_genes), p, n_genes)
+  U <- matrix(stats::rnorm(ncol(Z) * n_genes), ncol(Z), n_genes)
+  call_with <- function(block, cell_group = part$cell_group) {
+    pace_eta_block_blocked_cpp(numeric(0), TRUE, matrix(0, 0, 0), p, B, Z, list(block),
+                               list(part$terms), list(cell_group), U, 1:3, 0L, 1L)
+  }
+  expect_error(call_with(list(col_offset = 1L, K_terms = 3L, K_groups = 4L)), "tile")
+  expect_error(call_with(list(col_offset = 0L, K_terms = 2L, K_groups = 4L)), "n \\* n_terms")
+  expect_error(call_with(list(col_offset = 0L, K_terms = 3L, K_groups = 3L)), "cover")
+  expect_error(call_with(list(col_offset = 0L, K_terms = 3L, K_groups = 4L),
+                         cell_group = replace(part$cell_group, 1L, 9L)),
+               "outside its block")
+})
