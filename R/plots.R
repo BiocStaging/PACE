@@ -658,11 +658,32 @@ plotResponseCurve <- function(object, spe, gene, focal, neighbour,
   d <- .pace_response_data(object, spe, gene, focal, neighbour)
   d <- d[is.finite(d$density) & is.finite(d$expr), ]
 
-  ## The model's reference is the first factor level; the other arm carries the
-  ## interaction. Slopes are matched by name, then the case arm is shown first.
-  ref_arm  <- levels(d$arm)[1]
-  case_arm <- setdiff(levels(d$arm), ref_arm)[1]
-  slopes   <- .pace_arm_slopes(object, gene, focal, neighbour)
+  ## Which arm carries the interaction comes from `resp_term`, recorded when the
+  ## model was fitted, NOT from the level order here. `.pace_response_data()`
+  ## rebuilds the arm with factor(as.character(...)), which sorts alphabetically
+  ## and throws away the order `model.matrix()` actually used, so the two agree
+  ## only by coincidence. They do coincide on the shipped melanoma subset, whose
+  ## reference "nonPD" is also the alphabetically first of its two levels, which
+  ## is why this went unseen; on a cohort whose arms are "R" and "NR" the model's
+  ## reference is R while the alphabetically first is NR, and both dashed slopes
+  ## were then drawn on, and labelled with, the wrong arm.
+  cond      <- object@params$condition_col
+  resp_term <- object@params$resp_term
+  if (is.null(resp_term) || !startsWith(resp_term, cond)) {
+    stop("this fit records resp_term '", resp_term, "', which does not begin with ",
+         "condition_col '", cond, "', so the arm carrying the interaction cannot ",
+         "be identified.", call. = FALSE)
+  }
+  ## substring() rather than sub(), so a condition column whose name contains a
+  ## regular-expression metacharacter is not silently mismatched.
+  case_arm <- substring(resp_term, nchar(cond) + 1L)
+  if (!case_arm %in% levels(d$arm)) {
+    stop("resp_term '", resp_term, "' names the level '", case_arm, "', which is ",
+         "not among the ", cond, " levels present here (",
+         paste(levels(d$arm), collapse = ", "), ").", call. = FALSE)
+  }
+  ref_arm <- setdiff(levels(d$arm), case_arm)[1]
+  slopes  <- .pace_arm_slopes(object, gene, focal, neighbour)
   slope_by_arm <- stats::setNames(c(slopes[["ref"]], slopes[["alt"]]),
                                   c(ref_arm, case_arm))
   d$arm <- factor(as.character(d$arm), levels = c(case_arm, ref_arm))
