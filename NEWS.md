@@ -82,6 +82,20 @@ precision guard disabled the refit is identical to 0.99.0 (`max|diff| = 0`).
   `n` entries of the neighbour list, and pair rows are labelled from the same
   matching vector. The previous indexing misaligned neighbour columns whenever
   an interaction term was missing.
+* `plotResponseCurve()` draws each arm's fitted slope on the arm it belongs to.
+  It took the arm carrying the responder interaction from the first level of
+  the plotted factor, which is the alphabetically first one, while the model's
+  reference is the level recorded in `params$resp_term`. The two agree only by
+  coincidence, so on a cohort whose arms are `"R"` and `"NR"`, where the model
+  references `R` but `NR` sorts first, both dashed lines were drawn on, and
+  labelled with, the wrong arm. The agreement was not even stable for one
+  cohort: `"PD"` sorts before `"nonPD"` under `C` collation and after it under
+  `en_US`, so the same call could label the figure differently on two machines,
+  and the `condition` vignette exercises exactly that pair. A `resp_term` that
+  does not name a level of `condition_col` is now an error rather than a silent
+  guess. No fitted quantity is affected: the binned means are computed from the
+  data, and the slopes, decomposition and pair contributions all index the
+  coefficient matrices by explicit term name.
 
 ## New features
 
