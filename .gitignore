@@ -23,6 +23,10 @@ inst/doc/
 data-raw/*.rds
 # ...except the small shipped example dataset
 !inst/extdata/*.rds
+# ...and the frozen solver digests. Untracked, these made the bit-identity
+# gate skip silently on every fresh clone and in CI -- the one test that
+# proves the compiled core still reproduces the R it replaced.
+!tests/testthat/*.rds
 
 # compiled objects
 src/*.o
