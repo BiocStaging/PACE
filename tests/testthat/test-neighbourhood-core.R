@@ -236,31 +236,73 @@ test_that("same-type fractions match the reference, including cells with no neig
 test_that("neighbour sets and distances equal frNN on boundary layouts", {
   skip_if_not_installed("dbscan")
   set.seed(12)
+  ## Returns the points where the two neighbour sets disagree in a way that is
+  ## NOT explained by the radius boundary; character(0) means they agree.
+  ##
+  ## Exact set equality is the wrong assertion at the boundary. A pair whose
+  ## separation is indistinguishable from eps in double precision can fall
+  ## either side of the radius depending on how each package's C++ was
+  ## compiled: PACE suppresses FMA contraction (src/core/fp_no_contract.hpp)
+  ## but dbscan's build is outside this package's control and differs by
+  ## platform. The `pairs` layout below is built from 0.6-0.8-1 triangles
+  ## scaled by eps, so 1,758 of its 3,000 separations land exactly ON the
+  ## radius and 2,207 within two ulps of it; requiring identical sets there
+  ## tests the two toolchains against each other, not the neighbour search.
+  ## Bioconductor's builders failed all six platforms on precisely that.
+  ##
+  ## So a neighbour found by only one side is accepted only when its distance
+  ## sits within a few ulps of eps. Everything else must still match: any
+  ## disagreement away from the boundary is a real defect, and the neighbours
+  ## both sides found must agree on distance to the same few ulps.
   compare_sets <- function(coords, eps) {
     lists <- PACE:::pace_neighbour_lists_cpp(coords, rep(-1L, nrow(coords)), FALSE, eps, 2L)
     reference <- dbscan::frNN(coords, eps = eps)
     offsets <- lists$offsets
+    slack <- 8 * .Machine$double.eps * eps
+    on_radius <- function(i, j) {
+      d <- sqrt(sum((coords[i, ] - coords[j, ])^2))
+      abs(d - eps) <= slack
+    }
+    problems <- character(0)
     for (i in seq_len(nrow(coords))) {
       span <- if (offsets[i + 1] > offsets[i]) (offsets[i] + 1):offsets[i + 1] else integer(0)
+      ours <- lists$neighbours[span]
+      ours_dist <- lists$distances[span]
       ref_order <- order(reference$id[[i]])
-      if (!identical(lists$neighbours[span], reference$id[[i]][ref_order]) ||
-          !identical(lists$distances[span], reference$dist[[i]][ref_order])) {
-        return(FALSE)
+      theirs <- reference$id[[i]][ref_order]
+      theirs_dist <- reference$dist[[i]][ref_order]
+      if (identical(ours, theirs) && identical(ours_dist, theirs_dist)) next
+
+      disputed <- c(setdiff(ours, theirs), setdiff(theirs, ours))
+      off_boundary <- disputed[!vapply(disputed, function(j) on_radius(i, j), logical(1))]
+      if (length(off_boundary)) {
+        problems <- c(problems, sprintf(
+          "point %d: neighbour(s) %s disagree away from the radius",
+          i, paste(off_boundary, collapse = ", ")))
+        next
+      }
+      shared <- intersect(ours, theirs)
+      if (length(shared)) {
+        gap <- abs(ours_dist[match(shared, ours)] - theirs_dist[match(shared, theirs)])
+        if (any(gap > slack)) {
+          problems <- c(problems, sprintf(
+            "point %d: shared neighbour distances differ by %.3g", i, max(gap)))
+        }
       }
     }
-    TRUE
+    problems
   }
   lattice <- as.matrix(expand.grid(0:25, 0:25)) + 0
-  expect_true(compare_sets(lattice, 1))
-  expect_true(compare_sets(lattice, 2))
+  expect_equal(compare_sets(lattice, 1), character(0))
+  expect_equal(compare_sets(lattice, 2), character(0))
   origin <- cbind(stats::runif(3000, 0, 300), stats::runif(3000, 0, 300))
   pairs <- rbind(origin, origin + 7.3 * cbind(0.6, 0.8)[rep(1, 3000), ])
-  expect_true(compare_sets(pairs, 7.3))
+  expect_equal(compare_sets(pairs, 7.3), character(0))
   edge_x <- rep(c(0, 15, 30, 45), each = 3) * c(1, 1 + .Machine$double.eps, 1 - .Machine$double.eps)
   edge <- cbind(c(edge_x, edge_x), c(rep(0, 12), rep(15, 12)))
-  expect_true(compare_sets(edge, 15))
+  expect_equal(compare_sets(edge, 15), character(0))
   duplicates <- rbind(c(2, 2), c(2, 2), c(2, 3), c(9, 9))
-  expect_true(compare_sets(duplicates, 1))
+  expect_equal(compare_sets(duplicates, 1), character(0))
 })
 
 # Calls that hung or over-allocated before input validation (zero, denormal or
