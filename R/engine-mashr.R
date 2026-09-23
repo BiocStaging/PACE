@@ -255,11 +255,16 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
 #
 # RNG: mash() draws from the stream itself, and cov_pca() draws again for its
 # irlba starting vectors, so a serial run consumes the stream slice by slice in
-# an order no parallel run can reproduce -- with or without `data_driven`. Each
-# worker therefore seeds itself with its own slice index, which makes the
-# parallel result reproducible run to run but NOT equal to the serial one. The
-# serial default is what the fixtures were made with, and the measured
-# difference is in the design note.
+# an order no parallel run can reproduce -- with or without `data_driven`. The
+# parallel path therefore takes its randomness from BiocParallel's RNGseed,
+# which hands each task its own L'Ecuyer-CMRG substream: reproducible run to
+# run, but NOT equal to the serial result. The serial default is what the
+# fixtures were made with, and the measured difference is in the design note.
+#
+# Seeding each worker with set.seed() would do the same job and is what this
+# did first, but package code must not call set.seed(): it overwrites whatever
+# stream the caller had set up, and BiocCheck flags it. RNGseed is the
+# supported way to get the same determinism without touching global state.
 .pace_shrink_slices <- function(names_of_slices, shrink_one, shrink_threads) {
   threads <- .pace_thread_count(shrink_threads)
   if (threads == 1L || length(names_of_slices) < 2L) {
@@ -269,18 +274,16 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
     message("  [mashr] shrink_threads > 1 needs a forking platform; running the slices in order")
     return(stats::setNames(lapply(names_of_slices, shrink_one), names_of_slices))
   }
-  seeded <- function(index) {
-    set.seed(index)
-    shrink_one(names_of_slices[index])
-  }
   ## Collect once here rather than once inside every worker: the children
   ## inherit this heap, and its garbage with it.
   invisible(gc(full = TRUE, verbose = FALSE))
   ## One task per slice, so a slow slice does not hold a worker's whole share:
-  ## the slices differ several-fold in cost.
+  ## the slices differ several-fold in cost. RNGseed makes the substreams, and
+  ## therefore the result, the same on every run.
   param <- BiocParallel::MulticoreParam(workers = min(threads, length(names_of_slices)),
-                                        tasks = length(names_of_slices))
-  stats::setNames(BiocParallel::bplapply(seq_along(names_of_slices), seeded, BPPARAM = param),
+                                        tasks = length(names_of_slices),
+                                        RNGseed = 1L)
+  stats::setNames(BiocParallel::bplapply(names_of_slices, shrink_one, BPPARAM = param),
                   names_of_slices)
 }
 
