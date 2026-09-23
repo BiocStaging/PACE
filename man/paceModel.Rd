@@ -30,8 +30,9 @@ paceModel(object, ...)
 two-dimensional spatial coordinates.}
 
 \item{...}{Further arguments passed to the streaming fitter (\code{n_iter},
-\code{threads}, \code{drop_sparse_neff}, \code{within_image}, \code{edge_correct},
-\code{data_informed_tau}, \code{tau_shrinkage}, ...).}
+\code{threads}, \code{chunk_size}, \code{drop_sparse_neff}, \code{within_image},
+\code{edge_correct}, \code{data_informed_tau}, \code{tau_shrinkage}, and the memory and
+approximation settings described below).}
 
 \item{celltype_col}{colData column with the discrete cell-type annotation.}
 
@@ -76,6 +77,42 @@ the per-cell contamination correction). It returns a \link{PACEFit} carrying onl
 the fitted model; the reporting layers are added by \code{\link[=paceShrink]{paceShrink()}},
 \code{\link[=paceDecompose]{paceDecompose()}}, and \code{\link[=paceDrivers]{paceDrivers()}} (or all at once by \code{\link[=paceFit]{paceFit()}}).
 }
+\section{Memory and approximation settings}{
+
+
+Three pass-through arguments change how much memory a fit needs, or trade
+exactness for time. Two of them are approximations that are ON by default.
+
+\describe{
+\item{\code{ambient_mode}}{\code{"cache"} (default) or \code{"stream"}. The contamination
+model needs an ambient field per cell and gene; \code{"cache"} materialises
+that n by G product, \code{"stream"} recomputes each chunk's columns from the
+weights and the counts. The numbers are identical. On a 1.2M cell,
+5,001 gene panel the cached product alone is over 5 GB, so \code{"stream"} is
+what makes a full transcriptome panel fit in memory at all.}
+
+\item{\code{alpha_warmup}}{Default \code{6}. The per-gene dispersion MLE is re-fitted
+only on the first \code{alpha_warmup} iterations and on the last one; in
+between, alpha is frozen at its warmed-up value. Alpha typically settles
+within five iterations while the MLE is a large share of each iteration's
+cost, so this is on by default. \strong{It is an approximation}: pass \code{Inf} to
+re-fit the dispersion on every iteration. Lowering it below the default
+does move results -- on the breast cancer cohort \code{4} changes the number
+of calls at \code{lfsr < 0.05}.}
+
+\item{\code{alpha_max_n}}{Default \code{Inf}, meaning the dispersion MLE sees every
+cell. A finite value caps it at an even, deterministic subsample; the
+estimator, the Brent search and its tolerance are unchanged. The
+dispersion is one scalar per gene and its standard error falls as
+\code{1/sqrt(n)}, so most cells add little. \strong{Validate any cap on your own
+cohort before trusting it.} A cap of 50,000 reproduced two cohorts of
+roughly 10^5 cells exactly, and on a 1.2M cell panel -- where the same
+cap is a far smaller fraction of the data -- it left the number of calls
+unchanged while swapping the identity of 72 of them. The binding
+quantity is not the absolute subsample.}
+}
+}
+
 \examples{
 spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))
 \donttest{

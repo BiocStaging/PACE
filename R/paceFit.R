@@ -114,8 +114,43 @@
 #'   `NULL` it is derived from `condition_col`.
 #' @param verbose Whether to print progress.
 #' @param ... Further arguments passed to the streaming fitter (`n_iter`,
-#'   `threads`, `drop_sparse_neff`, `within_image`, `edge_correct`,
-#'   `data_informed_tau`, `tau_shrinkage`, ...).
+#'   `threads`, `chunk_size`, `drop_sparse_neff`, `within_image`,
+#'   `edge_correct`, `data_informed_tau`, `tau_shrinkage`, and the memory and
+#'   approximation settings described below).
+#'
+#' @section Memory and approximation settings:
+#'
+#' Three pass-through arguments change how much memory a fit needs, or trade
+#' exactness for time. Two of them are approximations that are ON by default.
+#'
+#' \describe{
+#'   \item{`ambient_mode`}{`"cache"` (default) or `"stream"`. The contamination
+#'     model needs an ambient field per cell and gene; `"cache"` materialises
+#'     that n by G product, `"stream"` recomputes each chunk's columns from the
+#'     weights and the counts. The numbers are identical. On a 1.2M cell,
+#'     5,001 gene panel the cached product alone is over 5 GB, so `"stream"` is
+#'     what makes a full transcriptome panel fit in memory at all.}
+#'
+#'   \item{`alpha_warmup`}{Default `6`. The per-gene dispersion MLE is re-fitted
+#'     only on the first `alpha_warmup` iterations and on the last one; in
+#'     between, alpha is frozen at its warmed-up value. Alpha typically settles
+#'     within five iterations while the MLE is a large share of each iteration's
+#'     cost, so this is on by default. **It is an approximation**: pass `Inf` to
+#'     re-fit the dispersion on every iteration. Lowering it below the default
+#'     does move results -- on the breast cancer cohort `4` changes the number
+#'     of calls at `lfsr < 0.05`.}
+#'
+#'   \item{`alpha_max_n`}{Default `Inf`, meaning the dispersion MLE sees every
+#'     cell. A finite value caps it at an even, deterministic subsample; the
+#'     estimator, the Brent search and its tolerance are unchanged. The
+#'     dispersion is one scalar per gene and its standard error falls as
+#'     `1/sqrt(n)`, so most cells add little. **Validate any cap on your own
+#'     cohort before trusting it.** A cap of 50,000 reproduced two cohorts of
+#'     roughly 10^5 cells exactly, and on a 1.2M cell panel -- where the same
+#'     cap is a far smaller fraction of the data -- it left the number of calls
+#'     unchanged while swapping the identity of 72 of them. The binding
+#'     quantity is not the absolute subsample.}
+#' }
 #' @return A [PACEFit] with the fitted model (reporting layers empty).
 #' @examples
 #' spe <- readRDS(system.file("extdata", "bc_xenium_subset.rds", package = "PACE"))

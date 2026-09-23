@@ -99,6 +99,18 @@ precision guard disabled the refit is identical to 0.99.0 (`max|diff| = 0`).
 
 ## New features
 
+* The memory and approximation settings the fitter accepts are documented on
+  `paceModel()`, under "Memory and approximation settings". Three of them were
+  reachable but undocumented: `ambient_mode`, which decides whether the ambient
+  field is materialised or recomputed per chunk and is what lets a full
+  transcriptome panel fit in memory; `alpha_warmup`, which freezes the
+  dispersion MLE after its first few iterations and **defaults to 6**, so every
+  fit already runs that approximation; and `alpha_max_n`, which caps the cells
+  the dispersion MLE sees. The note on `alpha_max_n` records that a cap
+  validated on two cohorts of roughly 10^5 cells did not hold on a 1.2M cell
+  panel, where it left the number of calls unchanged while changing which
+  calls they were.
+
 * `cellContamination()` reports, per cell, the contamination loading `rho_i` and
   the fraction of the cell's expected counts attributed to its local ambient
   field, `sum_g mu_spill_ig / sum_g mu_ig`. This is the quantity the solver
