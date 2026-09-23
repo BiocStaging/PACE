@@ -348,7 +348,6 @@ Status rho_accumulate(Span<const double> eta, Span<const double> prev_eta, const
     expand_column(counts, j, n, y_column);
     expand_column(ambient, j, n, ambient_column);
     const double* eta_column = seed_iteration ? nullptr : eta.data + j * n;
-    const double* prev_column = have_previous ? prev_eta.data + j * n : nullptr;
     const double alpha_gene = alpha[j];
     const std::int64_t mask_column = counts.first_gene + j;   // see the note in the parallel path
     for (std::int64_t i = 0; i < n; ++i) {

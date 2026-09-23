@@ -16,14 +16,6 @@
 #include "core/sparse_product.hpp"
 #include "core/count_stats.hpp"
 
-namespace {
-// bindings.cpp keeps the same pair in its own anonymous namespace; there is no
-// header to share it through. R_CheckUserInterrupt() longjmps, so it runs under
-// R_ToplevelExec(), which turns a pending interrupt into a FALSE return.
-void check_interrupt_here(void*) { R_CheckUserInterrupt(); }
-bool user_interrupted() { return R_ToplevelExec(check_interrupt_here, nullptr) == FALSE; }
-}  // namespace
-
 // The sparse random-effect design of one block, as a dgCMatrix, plus the cell
 // indices grouped by group.
 //
