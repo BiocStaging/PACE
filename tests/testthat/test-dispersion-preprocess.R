@@ -167,6 +167,7 @@ test_that("every dispersion configuration is pinned to the bit", {
   # the collapse branch only exists when there are zeros to collapse
   expect_gt(sum(y == 0), 2000L)
 
+  skip_unless_bitexact_platform()
   mle <- function(nb2, zero_collapse, max_cells, fast_density) {
     PACE:::pace_dispersion_mle_cpp(y, mu, nb2, zero_collapse, max_cells, fast_density)
   }

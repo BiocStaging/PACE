@@ -20,6 +20,7 @@
 # that moved was expected to move.
 
 reference_fits <- function() {
+  skip_unless_bitexact_platform()
   path <- testthat::test_path("irls-driver-reference.rds")
   skip_if(!file.exists(path), "the frozen reference is not installed")
   readRDS(path)
