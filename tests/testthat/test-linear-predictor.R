@@ -47,10 +47,15 @@ test_that("the core's eta block matches the R expression it replaced", {
       }
     }
   }
-  ## p == 1 is a broadcast multiply on both sides, so it is exact. p > 1 sends
-  ## X_fixed %*% B through BLAS in R, whose accumulation is not reproducible
-  ## portably; the fixtures are gated at 1e-10, five orders above this.
-  expect_identical(worst[["1"]], 0)
+  ## The FIXED part at p == 1 is a broadcast multiply, exact on both sides;
+  ## p > 1 sends X_fixed %*% B through BLAS in R, whose accumulation is not
+  ## reproducible portably. But eta is the fixed part PLUS the Z sum, and that
+  ## sum is a reduction whose order depends on how the compiler vectorises --
+  ## which differs between AVX and NEON. Bioconductor's aarch64 builders failed
+  ## here at 1.8e-15 while every x86_64 build passed, so p == 1 is gated like
+  ## the other two rather than asserted exact. 1e-12 is three orders above what
+  ## was observed and still far below anything that could hide a real defect.
+  expect_lt(worst[["1"]], 1e-12)
   expect_lt(worst[["2"]], 1e-12)
   expect_lt(worst[["3"]], 1e-12)
 })

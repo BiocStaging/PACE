@@ -1,3 +1,33 @@
+# PACE 0.99.2
+
+Portability fixes found by Bioconductor's multi-platform builders. No change to
+any reported quantity: breast cancer holds at 1,637 calls, melanoma at 46 with
+SPP1 Macrophage<-Tumour at -0.066840.
+
+* Fused multiply-add is now suppressed by a compiler flag rather than by
+  pragmas. `#pragma GCC optimize("fp-contract=off")` is a documented debugging
+  aid that does not reliably override GCC's default, and `gene_solve.cpp` --
+  the solver -- never included the header at all, so contraction was live there
+  even on macOS. `./configure` probes the compiler and writes `-ffp-contract=off`
+  into `src/Makevars`, leaving it empty where the flag is rejected. This took
+  all six platforms from failing to x86_64 passing.
+
+* Comparisons between the compiled core and the R it replaces are made at a
+  tolerance rather than bit for bit where the quantity is a REDUCTION -- the
+  kernels, the ambient field, the linear predictor's Z sum. A reduction's
+  accumulation order is the compiler's to choose, and AVX and NEON choose
+  differently; aarch64 failed at 1e-15 where x86_64 passed. Shapes, names and
+  which entries are zero must still match exactly.
+
+* The frozen fixtures -- the IRLS digests and the pinned dispersion values --
+  run on the machine that froze them and skip elsewhere. They compare against
+  stored constants, and `exp`, `log` and `lgamma` are not bit-identical across
+  libm implementations, so no compiler setting can make them portable.
+
+* The shrinkage tests pin `shrink_threads = 1`. The default is 4, and on a
+  platform without `fork()` the shrinkage says so in a message that arrived
+  before the one the tests assert on, failing every Windows build.
+
 # PACE 0.99.1
 
 Correctness fixes from an internal audit of the fitting engine. All of these

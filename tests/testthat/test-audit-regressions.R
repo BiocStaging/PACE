@@ -1,3 +1,11 @@
+# shrink_threads is pinned to 1 in the pace_shrink() calls below. The default
+# is 4, and on a platform without fork() the shrinkage says so:
+#   "[mashr] shrink_threads > 1 needs a forking platform; running the slices in order"
+# That message arrives BEFORE the one these tests are asserting on, and
+# expect_message() takes the first, so every Windows build failed here while
+# Linux and macOS passed. The tests are about which genes and neighbours get
+# dropped, not about parallelism, so one process is the right setting anyway.
+
 # Regression tests for the 0.99.1 correctness fixes. Each one pins a defect
 # that produced wrong numbers with no error raised, so the failure mode cannot
 # come back silently.
@@ -139,7 +147,8 @@ test_that("every neighbour slice is shrunk over the same genes", {
   # on different gene sets.
   fit@fit$se_U["Macrophage::Tumour", "MRC1"] <- 100
   expect_message(
-    slopes <- PACE:::pace_shrink(fit@fit, fit@cellTypes, data_driven = FALSE),
+    slopes <- PACE:::pace_shrink(fit@fit, fit@cellTypes, data_driven = FALSE,
+                       shrink_threads = 1L),
     "genes dropped to keep the gene set common across neighbours")
   genes_by_neighbour <- split(slopes$gene, slopes$neighbour)
   expect_length(genes_by_neighbour, length(fit@cellTypes))
@@ -168,7 +177,8 @@ test_that("a collapsed neighbour slice is skipped alone, not with every other sl
   fit@fit$U[myo_rows, ]    <- 0
   fit@fit$se_U[myo_rows, ] <- 9.9e-5
   expect_message(
-    slopes <- PACE:::pace_shrink(fit@fit, fit@cellTypes, data_driven = FALSE),
+    slopes <- PACE:::pace_shrink(fit@fit, fit@cellTypes, data_driven = FALSE,
+                       shrink_threads = 1L),
     "Myoepithelial' has <5 well-fit genes")
   expect_false("Myoepithelial" %in% slopes$neighbour)
   expect_setequal(unique(slopes$neighbour), setdiff(fit@cellTypes, "Myoepithelial"))

@@ -20,7 +20,40 @@ synthetic_images <- function(coords) {
   image
 }
 
-test_that("kernels match the frNN + sparseMatrix reference exactly", {
+## The kernel entry for a cell is a SUM over its neighbours, so it is a
+## reduction, and a reduction's result depends on the order the compiler chooses
+## to accumulate it. AVX and NEON vectorise it differently: Bioconductor's
+## aarch64 builders failed this comparison while every x86_64 build passed, at a
+## relative difference of order 1e-16. Exact equality is therefore an assertion
+## about the instruction set, not about the kernel.
+##
+## What still has to match exactly is everything that is not arithmetic -- the
+## names, the shapes and which entries are zero, i.e. which cells the search
+## found as neighbours at all. A defect in the neighbour search changes the zero
+## pattern; a defect in the weighting changes the values by far more than 1e-12.
+## Same reasoning as expect_kernel_equal: the ambient field and the exported
+## helpers that wrap it are sums over neighbours, so their accumulation order is
+## the compiler's choice and differs between AVX and NEON. These return nested
+## structures (sparse matrices inside lists), so the comparison is delegated to
+## expect_equal(), which walks them and applies the tolerance to the numeric
+## leaves while still requiring the shapes, names and classes to match.
+expect_numeric_equal <- function(new, ref, tol = 1e-12) {
+  expect_equal(new, ref, tolerance = tol)
+}
+
+expect_kernel_equal <- function(new, ref, tol = 1e-12) {
+  expect_identical(names(new), names(ref))
+  for (nm in names(new)) {
+    expect_identical(dim(new[[nm]]), dim(ref[[nm]]))
+    expect_identical(dimnames(new[[nm]]), dimnames(ref[[nm]]))
+    a <- as.numeric(new[[nm]]); b <- as.numeric(ref[[nm]])
+    expect_identical(a == 0, b == 0)
+    rel <- abs(a - b) / pmax(abs(b), 1e-300)
+    expect_lt(max(rel[is.finite(rel)], 0), tol)
+  }
+}
+
+test_that("kernels match the frNN + sparseMatrix reference", {
   skip_if_not_installed("SpatialExperiment")
   spe <- bc_crop()
   coords <- SpatialExperiment::spatialCoords(spe)
@@ -30,18 +63,18 @@ test_that("kernels match the frNN + sparseMatrix reference exactly", {
 
   global_new <- PACE:::pace_neighbour_kernel(coords, ct, types, 30, 5, 90, threads = 2L)
   global_ref <- reference_neighbour_kernel(coords, ct, types, 30, 5, 90)
-  expect_identical(global_new, global_ref)
+  expect_kernel_equal(global_new, global_ref)
 
   per_image_new <- PACE:::pace_neighbour_kernel(coords, ct, types, 30, 5, 90,
                                                 image = image, per_image = TRUE, threads = 2L)
   per_image_ref <- reference_neighbour_kernel(coords, ct, types, 30, 5, 90,
                                               image = image, per_image = TRUE)
-  expect_identical(per_image_new, per_image_ref)
+  expect_kernel_equal(per_image_new, per_image_ref)
 
   # a type subset: cells of other types are not neighbours but keep their rows
   subset_new <- PACE:::pace_neighbour_kernel(coords, ct, types[1:3], 30, 5, 90)
   subset_ref <- reference_neighbour_kernel(coords, ct, types[1:3], 30, 5, 90)
-  expect_identical(subset_new, subset_ref)
+  expect_kernel_equal(subset_new, subset_ref)
 })
 
 test_that("neighbour search reproduces frNN at exactly eps, with duplicates and tiny images", {
@@ -111,7 +144,7 @@ test_that("ambient field W matches the reference, per image and without edge cor
     new <- PACE:::pace_ambient_field(coords, PACE:::.pace_as_dgc(Y), ct, image, types, 5,
                                      edge_correct = edge_correct, verbose = FALSE, threads = 2L)
     ref <- reference_ambient_field(coords, Y, ct, image, types, 5, edge_correct = edge_correct)
-    expect_identical(new, ref)
+    expect_numeric_equal(new, ref)
   }
 })
 
@@ -174,11 +207,11 @@ test_that("exported neighbourhood helpers keep their outputs", {
   ct <- as.character(spe$cellType)
   types <- sort(unique(ct))
 
-  expect_identical(buildNeighbourhood(spe, "cellType"),
+  expect_numeric_equal(buildNeighbourhood(spe, "cellType"),
                    reference_neighbour_kernel(coords, ct, types, 30, 5, 90))
 
   Y <- t(as.matrix(SummarizedExperiment::assay(spe, "counts")))
-  expect_identical(ambientField(spe, "cellType", verbose = FALSE),
+  expect_numeric_equal(ambientField(spe, "cellType", verbose = FALSE),
                    reference_ambient_field(coords, Y, ct, factor(rep("all", nrow(Y))), types, 5))
 
   fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
