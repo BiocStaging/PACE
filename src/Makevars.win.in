@@ -2,6 +2,10 @@
 # to ask for and no libomp to find on macOS.
 PKG_LIBS = -pthread
 
+# Set by ./configure.win; see src/Makevars.in for why.
+PKG_CXXFLAGS = @FPCONTRACT@
+
+
 OBJECTS = RcppExports.o bindings.o \
           core/thread_pool.o core/stage_timer.o core/neighbourhood.o core/count_stats.o \
           core/statistics.o core/decomposition.o \

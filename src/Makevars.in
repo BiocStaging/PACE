@@ -1,0 +1,24 @@
+# Everything compiled here parallelises with std::thread, so there is no OpenMP
+# to ask for and no libomp to find on macOS.
+PKG_LIBS = -pthread
+
+# Set by ./configure, which tests whether this compiler accepts it. Empty when
+# it does not, so an unknown compiler still builds.
+#
+# Why it matters: the core must reproduce the R it replaced bit for bit, so no
+# fused multiply-add. src/core/fp_no_contract.hpp asks for that with pragmas,
+# but `#pragma GCC optimize` is a documented debugging aid that does not
+# reliably override -ffp-contract=fast (GCC's default), and several core
+# translation units -- gene_solve.cpp among them -- never included the header
+# at all. The flag covers every unit, and the headers and template
+# instantiations the pragma cannot reach.
+PKG_CXXFLAGS = @FPCONTRACT@
+
+
+OBJECTS = RcppExports.o bindings.o \
+          core/thread_pool.o core/stage_timer.o core/neighbourhood.o core/count_stats.o \
+          core/statistics.o core/decomposition.o \
+          core/irls_chunk.o core/hyperparameters.o core/gene_solve.o \
+          core/dispersion.o core/preprocess.o \
+          core/linear_predictor.o core/irls_driver.o \
+          core/random_design.o core/sparse_product.o bindings_random_design.o

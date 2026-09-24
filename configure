@@ -1,0 +1,33 @@
+#!/bin/sh
+# Decide whether the C++ compiler accepts -ffp-contract=off, and write
+# src/Makevars accordingly.
+#
+# The flag cannot simply be written into src/Makevars: R CMD check reports
+# "Non-portable flags in variable 'PKG_CXXFLAGS'" for anything it does not
+# recognise as universally accepted, and a Bioconductor submission must be free
+# of warnings. Probing the actual compiler is the supported way to use it, and
+# leaves a compiler that rejects it with a working build.
+set -e
+
+: "${R_HOME=$(R RHOME)}"
+CXX=$("${R_HOME}/bin/R" CMD config CXX)
+CXXFLAGS=$("${R_HOME}/bin/R" CMD config CXXFLAGS)
+
+FPCONTRACT=""
+TESTDIR=$(mktemp -d 2>/dev/null || echo .)
+cat > "${TESTDIR}/pace_fp_test.cpp" <<'PROBE'
+int main() { return 0; }
+PROBE
+if ${CXX} ${CXXFLAGS} -ffp-contract=off -c "${TESTDIR}/pace_fp_test.cpp" \
+        -o "${TESTDIR}/pace_fp_test.o" > /dev/null 2>&1; then
+  FPCONTRACT="-ffp-contract=off"
+  echo "configure: C++ compiler accepts -ffp-contract=off; fused multiply-add is off"
+else
+  echo "configure: C++ compiler rejects -ffp-contract=off; falling back to the"
+  echo "configure: pragmas in src/core/fp_no_contract.hpp, which may leave the"
+  echo "configure: compiled core differing from the R reference in the last bit"
+fi
+rm -f "${TESTDIR}/pace_fp_test.cpp" "${TESTDIR}/pace_fp_test.o"
+[ "${TESTDIR}" = "." ] || rmdir "${TESTDIR}" 2>/dev/null || true
+
+sed "s|@FPCONTRACT@|${FPCONTRACT}|" src/Makevars.in > src/Makevars
