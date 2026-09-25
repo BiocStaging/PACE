@@ -306,7 +306,8 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
   a_cache <- if (is_gaussian) methods::new("dgCMatrix", Dim = c(as.integer(n), as.integer(g_n)),
                                            p = integer(g_n + 1L), i = integer(0), x = numeric(0))
              else if (stream_ambient) .pace_as_dgc(ambient_W)
-             else .pace_as_dgc(ambient_W %*% Y)
+             else pace_sparse_product_cpp(.pace_as_dgc(ambient_W), Y, 1L, g_n,
+                                          .pace_thread_count(n_threads))
   if (stream_ambient && verbose)
     cat("  [mvpql.streaming] ambient field STREAMED: the n x G product is never materialised\n")
 
@@ -475,11 +476,16 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     gene_idx_chk <- cs:min(cs + chunk_size - 1L, g_n)
     eta_chk <- .eta_block(B, U, gene_idx_chk)
     ## In streamed mode `a_cache` holds W, not the product, so this pass has to
-    ## build its own chunk. Slicing first and multiplying gives exactly what
-    ## multiplying and slicing would -- a sparse product is column-independent --
-    ## and this runs once at the end rather than per iteration.
+    ## build its own chunk. Taking a column range gives exactly what multiplying
+    ## everything and slicing would -- a sparse product is column-independent --
+    ## and this runs once at the end rather than per iteration. It goes through
+    ## the core's product rather than R's `%*%` for the reason given on
+    ## pace_sparse_product_cpp: the two round differently wherever the baseline
+    ## ISA has a fused multiply-add, and then cache and stream modes disagree.
     if (stream_ambient) {
-      ambient_chk <- .pace_as_dgc(a_cache %*% Y[, gene_idx_chk, drop = FALSE])
+      ambient_chk <- pace_sparse_product_cpp(a_cache, Y, gene_idx_chk[1L],
+                                             length(gene_idx_chk),
+                                             .pace_thread_count(n_threads))
       first_gene_chk <- 1L
     } else {
       ambient_chk <- a_cache
