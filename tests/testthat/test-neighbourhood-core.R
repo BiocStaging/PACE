@@ -356,7 +356,12 @@ run_isolated <- function(fun, timeout = 60) {
                sprintf("saveRDS(isolated(), %s)", deparse(result_file))), script)
   status <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"), shQuote(script),
                                      stdout = FALSE, stderr = FALSE, timeout = timeout,
-                                     env = paste0("R_LIBS=", shQuote(paste(.libPaths(), collapse = ":")))))
+                                     ## .Platform$path.sep, not ":" -- on Windows the separator is ";"
+                                     ## AND the paths themselves contain colons ("C:/R/library"), so a
+                                     ## colon-joined R_LIBS is unparseable there and the isolated process
+                                     ## cannot find the package it is meant to be testing.
+                                     env = paste0("R_LIBS=", shQuote(paste(.libPaths(),
+                                                  collapse = .Platform$path.sep)))))
   if (!file.exists(result_file))
     stop("isolated R process did not finish (exit status ", status, "; 124 means timeout)")
   readRDS(result_file)
