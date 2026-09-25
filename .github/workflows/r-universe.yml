@@ -1,0 +1,26 @@
+# Run the exact build and check that r-universe runs for Bioconductor, but on
+# this repository, so failures can be read here instead of downloading artefacts
+# from r-universe/biocstaging and waiting for the next batch.
+#
+# This exists because Windows failed five builds in a row with a silent crash --
+# no error, no testthat tally, output truncated mid-run -- and the job
+# annotation there truncates at "Show more". Running the same matrix here gives
+# full logs, re-runs, and the ability to bisect without spending a version bump
+# on every attempt.
+#
+# Taken verbatim from https://docs.r-universe.dev/bioconductor/ ("Debugging the
+# CI"). `organization: bioconductor` is what turns BiocCheck on.
+name: Test R-universe
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: R-universe testing
+    uses: r-universe-org/workflows/.github/workflows/build.yml@v3
+    with:
+      universe: bioc
+      organization: bioconductor # for BiocCheck checks
