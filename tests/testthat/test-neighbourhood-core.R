@@ -30,18 +30,24 @@ synthetic_images <- function(coords) {
 ## What still has to match exactly is everything that is not arithmetic -- the
 ## names, the shapes and which entries are zero, i.e. which cells the search
 ## found as neighbours at all. A defect in the neighbour search changes the zero
-## pattern; a defect in the weighting changes the values by far more than 1e-12.
+## pattern; a defect in the weighting changes the values by far more than this.
+##
+## The tolerance is 1e-10, not 1e-12. A sum of n terms carries an error of
+## order n * eps, and these run to ~7,900 cells: 7900 * 2.2e-16 is 1.7e-12, so
+## 1e-12 sits BELOW the noise floor of the computation. aarch64 duly failed at
+## 2.8e-12 on the first attempt. 1e-10 is the gate the rest of this suite
+## already uses (expect_tables_close, and the linear predictor's fixtures).
 ## Same reasoning as expect_kernel_equal: the ambient field and the exported
 ## helpers that wrap it are sums over neighbours, so their accumulation order is
 ## the compiler's choice and differs between AVX and NEON. These return nested
 ## structures (sparse matrices inside lists), so the comparison is delegated to
 ## expect_equal(), which walks them and applies the tolerance to the numeric
 ## leaves while still requiring the shapes, names and classes to match.
-expect_numeric_equal <- function(new, ref, tol = 1e-12) {
+expect_numeric_equal <- function(new, ref, tol = 1e-10) {
   expect_equal(new, ref, tolerance = tol)
 }
 
-expect_kernel_equal <- function(new, ref, tol = 1e-12) {
+expect_kernel_equal <- function(new, ref, tol = 1e-10) {
   expect_identical(names(new), names(ref))
   for (nm in names(new)) {
     expect_identical(dim(new[[nm]]), dim(ref[[nm]]))

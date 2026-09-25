@@ -1,3 +1,10 @@
+# PACE 0.99.3
+
+* The portability tolerance from 0.99.2 was set at 1e-12, which is below the
+  noise floor of the quantity it gates: these are sums over ~7,900 cells, and
+  n * eps is 1.7e-12. aarch64 failed at 2.8e-12. Raised to 1e-10, the gate the
+  rest of the suite already uses.
+
 # PACE 0.99.2
 
 Portability fixes found by Bioconductor's multi-platform builders. No change to
