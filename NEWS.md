@@ -1,3 +1,45 @@
+# PACE 0.99.4
+
+The remaining multi-platform failures were four unrelated bugs, not one. No
+change to any reported quantity: breast cancer holds at 1,637 calls, melanoma at
+46 with SPP1 Macrophage<-Tumour at -0.066840, and both gates print numbers
+identical to the previous build.
+
+* The two ambient modes are bit-identical again on every platform. Cache mode
+  took its product from R's `%*%` while streamed mode used the package's own
+  `sparse_product_csc`: two implementations of the same sparse product, only one
+  of them in a translation unit this package sets flags on, so their agreement
+  was a coincidence between two libraries rather than a property of this code --
+  and it held only on x86-64, whose baseline ISA has no fused multiply-add. Both
+  modes now call the core's product, so they differ only in chunking, which is
+  exact because a sparse product is column-independent. The readout rebuild in
+  `.pace_mu_block()` was a third site on the same path and is switched over too.
+
+* Windows no longer dies silently during the tests. Six `static thread_local`
+  non-POD objects lived inside worker bodies; they destruct at every thread exit,
+  this thread pool spawns and joins fresh threads on every call, and destroying
+  thread-local objects inside a loaded library that often is a known way to lose
+  a process on MinGW-w64. The scratch is now owned by the caller, one slot per
+  worker, through a worker-indexed `parallel_for` overload.
+
+* `run_isolated()` in the tests passed the child's library path through
+  `system2(env = )`, which Windows does not support for `Rscript`. It now writes
+  `.libPaths()` into the generated script.
+
+* The webR build links with `--shared-memory`, which is refused unless every
+  object was compiled with atomics. `-pthread` was in `PKG_LIBS` but not
+  `PKG_CXXFLAGS`; `./configure` now probes it for the compile line as well.
+
+* `shrink_threads` defaults to 1. The parallel shrink raised a BiocParallel
+  reducer error on one supported R version that could not be reproduced on any
+  other, and serial is the stream the package's fixtures were made with. Raise it
+  when a large cohort's shrinkage is the bottleneck.
+
+* The test suite names the running file and test on stderr. R installs its
+  SIGSEGV handler on Unix-alikes only, and `R CMD check` keeps the last few lines
+  of block-buffered stdout, so a Windows crash previously pointed at a test that
+  had already finished. stderr is unbuffered and survives the kill.
+
 # PACE 0.99.3
 
 * The portability tolerance from 0.99.2 was set at 1e-12, which is below the
