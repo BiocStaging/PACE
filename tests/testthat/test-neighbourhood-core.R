@@ -352,16 +352,20 @@ run_isolated <- function(fun, timeout = 60) {
   script <- tempfile(fileext = ".R")
   result_file <- tempfile(fileext = ".rds")
   on.exit(unlink(c(script, result_file)), add = TRUE)
-  writeLines(c(paste0("isolated <- ", paste(deparse(fun), collapse = "\n")),
+  ## The library path goes in the SCRIPT, not in system2(env=). ?system2 says env
+  ## is "only supported for commands such as R and make which accept environment
+  ## variables on their command line" on Windows, and Rscript is not one of them:
+  ## the child got no R_LIBS, could not load the package it is meant to be
+  ## testing, and died with exit status 5. Writing .libPaths() into the script
+  ## needs no environment at all and behaves the same everywhere.
+  ## deparse() wraps at width.cutoff, so a multi-entry library path comes back as
+  ## SEVERAL lines; collapse it or the generated call is split across lines and the
+  ## child dies on a syntax error. Same reason deparse(fun) is collapsed below.
+  writeLines(c(sprintf(".libPaths(%s)", paste(deparse(.libPaths()), collapse = "")),
+               paste0("isolated <- ", paste(deparse(fun), collapse = "\n")),
                sprintf("saveRDS(isolated(), %s)", deparse(result_file))), script)
   status <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"), shQuote(script),
-                                     stdout = FALSE, stderr = FALSE, timeout = timeout,
-                                     ## .Platform$path.sep, not ":" -- on Windows the separator is ";"
-                                     ## AND the paths themselves contain colons ("C:/R/library"), so a
-                                     ## colon-joined R_LIBS is unparseable there and the isolated process
-                                     ## cannot find the package it is meant to be testing.
-                                     env = paste0("R_LIBS=", shQuote(paste(.libPaths(),
-                                                  collapse = .Platform$path.sep)))))
+                                     stdout = FALSE, stderr = FALSE, timeout = timeout))
   if (!file.exists(result_file))
     stop("isolated R process did not finish (exit status ", status, "; 124 means timeout)")
   readRDS(result_file)
