@@ -12,6 +12,14 @@
 \arguments{
 \item{object}{A \link{PACEFit} object.}
 }
+\value{
+The \code{PACEFit} class itself is a container and is not returned by a
+function documented here; construct one with \code{\link[=paceFit]{paceFit()}}. The \code{show} method
+is called for its side effect of printing a one-screen summary of the fit --
+cell types, kernel bandwidths, contamination and dispersion settings, the
+condition term if there is one, and which pipeline stages have run -- and
+returns \code{NULL} invisibly.
+}
 \description{
 An S4 container for the result of a PACE fit. It holds the raw penalised
 quasi-likelihood solver state together with the three interpretable output

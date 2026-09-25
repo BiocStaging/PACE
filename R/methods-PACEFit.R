@@ -68,6 +68,12 @@ setMethod("topDrivers", "PACEFit", function(object, ...) {
 })
 
 #' @param object A [PACEFit] object.
+#' @return The `PACEFit` class itself is a container and is not returned by a
+#'   function documented here; construct one with [paceFit()]. The `show` method
+#'   is called for its side effect of printing a one-screen summary of the fit --
+#'   cell types, kernel bandwidths, contamination and dispersion settings, the
+#'   condition term if there is one, and which pipeline stages have run -- and
+#'   returns `NULL` invisibly.
 #' @importFrom methods show
 #' @rdname PACEFit-class
 #' @export

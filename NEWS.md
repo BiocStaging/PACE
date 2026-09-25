@@ -1,3 +1,13 @@
+# PACE 0.99.5
+
+* `man/PACEFit-class.Rd` had no `\value` section, which BiocCheck 1.49 reports as
+  a WARNING. It was the one warning left on Bioconductor's builder and it did not
+  appear locally, because BiocCheck 1.44 does not run that check -- a version gap,
+  not a platform difference. The `show` method now documents that it is called
+  for its printing side effect and returns `NULL` invisibly. Verified against
+  BiocCheck 1.49.31: the warning reproduces with the section removed and is
+  silent with it present. No code change.
+
 # PACE 0.99.4
 
 The remaining multi-platform failures were four unrelated bugs, not one. No
