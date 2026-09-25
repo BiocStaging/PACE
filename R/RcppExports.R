@@ -45,6 +45,10 @@ pace_final_pass_statistics_cpp <- function(eta, offset, ambient, first_gene, rho
     .Call(`_PACE_pace_final_pass_statistics_cpp`, eta, offset, ambient, first_gene, rho, group, n_groups, want_groups, return_matrices)
 }
 
+pace_sparse_product_cpp <- function(left, right, first_column, n_columns, n_threads) {
+    .Call(`_PACE_pace_sparse_product_cpp`, left, right, first_column, n_columns, n_threads)
+}
+
 pace_variance_decomposition_cpp <- function(ct_means, group_size, focal_group, n_focal, u, se_u, slope_rows, kernel_cov, responder_rows, responder_keep, responder_cov, intercept_rows, toff_var, spill_cov, beta_spill, mu_mean, alpha, nb1, n_threads) {
     .Call(`_PACE_pace_variance_decomposition_cpp`, ct_means, group_size, focal_group, n_focal, u, se_u, slope_rows, kernel_cov, responder_rows, responder_keep, responder_cov, intercept_rows, toff_var, spill_cov, beta_spill, mu_mean, alpha, nb1, n_threads)
 }

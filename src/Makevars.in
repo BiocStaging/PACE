@@ -12,7 +12,14 @@ PKG_LIBS = -pthread
 # translation units -- gene_solve.cpp among them -- never included the header
 # at all. The flag covers every unit, and the headers and template
 # instantiations the pragma cannot reach.
-PKG_CXXFLAGS = @FPCONTRACT@
+# @PTHREAD@ is -pthread when the compiler accepts it at COMPILE time, which is
+# separate from having it in PKG_LIBS above. Emscripten needs it on both: its R
+# is built with shared memory, so it links with --shared-memory, and that is
+# refused unless every object was compiled with the atomics and bulk-memory
+# features that -pthread turns on. Without it the webR build failed at the link
+# with "--shared-memory is disallowed by RcppExports.o". On Linux, macOS and
+# MinGW it only defines _REENTRANT and changes nothing else.
+PKG_CXXFLAGS = @FPCONTRACT@ @PTHREAD@
 
 
 OBJECTS = RcppExports.o bindings.o \

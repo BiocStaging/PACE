@@ -30,4 +30,21 @@ fi
 rm -f "${TESTDIR}/pace_fp_test.cpp" "${TESTDIR}/pace_fp_test.o"
 [ "${TESTDIR}" = "." ] || rmdir "${TESTDIR}" 2>/dev/null || true
 
-sed "s|@FPCONTRACT@|${FPCONTRACT}|" src/Makevars.in > src/Makevars
+
+PTHREAD=""
+TESTDIR2=$(mktemp -d 2>/dev/null || echo .)
+cat > "${TESTDIR2}/pace_pthread_test.cpp" <<'PROBE'
+#include <thread>
+int main() { std::thread t([]{}); t.join(); return 0; }
+PROBE
+if ${CXX} ${CXXFLAGS} -pthread -c "${TESTDIR2}/pace_pthread_test.cpp" \
+        -o "${TESTDIR2}/pace_pthread_test.o" > /dev/null 2>&1; then
+  PTHREAD="-pthread"
+  echo "configure: C++ compiler accepts -pthread when compiling"
+else
+  echo "configure: C++ compiler rejects -pthread when compiling; omitting it"
+fi
+rm -f "${TESTDIR2}/pace_pthread_test.cpp" "${TESTDIR2}/pace_pthread_test.o"
+[ "${TESTDIR2}" = "." ] || rmdir "${TESTDIR2}" 2>/dev/null || true
+
+sed -e "s|@FPCONTRACT@|${FPCONTRACT}|" -e "s|@PTHREAD@|${PTHREAD}|" src/Makevars.in > src/Makevars

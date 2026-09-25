@@ -1,7 +1,7 @@
 Package: PACE
 Type: Package
 Title: Proximity-Associated Changes in Expression for Spatial Transcriptomics
-Version: 0.99.3
+Version: 0.99.4
 Authors@R: c(
     person("Elijah", "Willie", email = "ewil3501@uni.sydney.edu.au",
            role = c("aut", "cre"), comment = c(ORCID = "0000-0002-5773-3649")),
@@ -50,6 +50,7 @@ Suggests:
     broom.mixed,
     glue,
     testthat (>= 3.0.0),
+    R6,
     knitr,
     rmarkdown,
     BiocStyle

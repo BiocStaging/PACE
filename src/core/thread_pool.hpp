@@ -27,6 +27,27 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
                     const std::function<void(std::int64_t, std::int64_t)>& body,
                     const InterruptCheck& interrupted);
 
+// As above, but `body(begin, end, worker)` also receives the index of the worker
+// running the block, in [0, worker_count(n_threads, n_items, block_size)).
+//
+// This exists so per-worker scratch can be owned by the CALLER -- one slot per
+// worker, allocated before the loop -- instead of living in function-local
+// `static thread_local` storage. Those destruct at every thread exit, and since
+// this pool spawns and joins fresh threads on every call, a fit ran hundreds of
+// thread teardowns each destroying thread_local non-POD objects inside a
+// dynamically loaded library. That is a known way to lose a process silently on
+// MinGW-w64, and the Windows builds died with no error, no testthat tally and no
+// "Execution halted" at the first call that used more than one thread.
+//
+// The block partition is unchanged, so results still do not depend on n_threads.
+Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size,
+                    const std::function<void(std::int64_t, std::int64_t, int)>& body,
+                    const InterruptCheck& interrupted);
+
+// How many workers parallel_for will use for this shape. Callers size their
+// per-worker scratch with this, so the two cannot disagree.
+int worker_count(int n_threads, std::int64_t n_items, std::int64_t block_size);
+
 }  // namespace pace
 
 #endif  // PACE_THREAD_POOL_HPP

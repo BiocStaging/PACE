@@ -86,8 +86,14 @@ Status sparse_product_csc(const CscView& left, const CscView& right,
   // first means the column pointers are known before a single value is written,
   // so the output is allocated once at exactly its final size.
   std::vector<int> column_count(static_cast<std::size_t>(n_columns), 0);
-  auto count_body = [&](std::int64_t begin, std::int64_t end) {
-    static thread_local SparseAccumulator accumulator;
+  // Per-worker accumulators owned here, not in `static thread_local` storage:
+  // those destruct at every thread exit and this pool spawns fresh threads per
+  // call (see thread_pool.hpp). Sized by the same helper parallel_for uses, so
+  // the index is always in range.
+  const int n_count_workers = worker_count(n_threads, n_columns, 1);
+  std::vector<SparseAccumulator> count_accumulators(static_cast<std::size_t>(n_count_workers));
+  auto count_body = [&](std::int64_t begin, std::int64_t end, int worker) {
+    SparseAccumulator& accumulator = count_accumulators[static_cast<std::size_t>(worker)];
     accumulator.resize(n_rows);
     for (std::int64_t j = begin; j < end; ++j) {
       accumulator.accumulate(left, right, first_column + j);
@@ -113,8 +119,9 @@ Status sparse_product_csc(const CscView& left, const CscView& right,
     running_total += column_count[static_cast<std::size_t>(j)];
     if (running_total > static_cast<std::int64_t>(std::numeric_limits<int>::max())) {
       return Status::failure(StatusCode::invalid_argument,
-                             "the chunk's ambient product exceeds what a sparse matrix can hold; "
-                             "reduce chunk_size");
+                             "the ambient product exceeds what a sparse matrix can hold; "
+                             "use ambient_mode = \"stream\", or a smaller chunk_size if "
+                             "already streaming");
     }
     column_pointer[static_cast<std::size_t>(j) + 1] = static_cast<int>(running_total);
   }
@@ -129,8 +136,10 @@ Status sparse_product_csc(const CscView& left, const CscView& right,
   // Pass two: fill. Column j writes only into its own slice, so this is the
   // same partition as the count pass and the result does not depend on it.
   std::atomic<bool> failed(false);
-  auto fill_body = [&](std::int64_t begin, std::int64_t end) {
-    static thread_local SparseAccumulator accumulator;
+  const int n_fill_workers = worker_count(n_threads, n_columns, 1);
+  std::vector<SparseAccumulator> fill_accumulators(static_cast<std::size_t>(n_fill_workers));
+  auto fill_body = [&](std::int64_t begin, std::int64_t end, int worker) {
+    SparseAccumulator& accumulator = fill_accumulators[static_cast<std::size_t>(worker)];
     accumulator.resize(n_rows);
     for (std::int64_t j = begin; j < end; ++j) {
       accumulator.accumulate(left, right, first_column + j);

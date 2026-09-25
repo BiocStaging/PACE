@@ -195,6 +195,21 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// pace_sparse_product_cpp
+Rcpp::S4 pace_sparse_product_cpp(const Rcpp::S4& left, const Rcpp::S4& right, int first_column, int n_columns, int n_threads);
+RcppExport SEXP _PACE_pace_sparse_product_cpp(SEXP leftSEXP, SEXP rightSEXP, SEXP first_columnSEXP, SEXP n_columnsSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type left(leftSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::S4& >::type right(rightSEXP);
+    Rcpp::traits::input_parameter< int >::type first_column(first_columnSEXP);
+    Rcpp::traits::input_parameter< int >::type n_columns(n_columnsSEXP);
+    Rcpp::traits::input_parameter< int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(pace_sparse_product_cpp(left, right, first_column, n_columns, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // pace_variance_decomposition_cpp
 Rcpp::List pace_variance_decomposition_cpp(const Rcpp::NumericMatrix& ct_means, const Rcpp::IntegerVector& group_size, const Rcpp::IntegerVector& focal_group, const Rcpp::IntegerVector& n_focal, const Rcpp::NumericMatrix& u, const Rcpp::NumericMatrix& se_u, const Rcpp::IntegerMatrix& slope_rows, const Rcpp::NumericVector& kernel_cov, const Rcpp::IntegerMatrix& responder_rows, const Rcpp::IntegerVector& responder_keep, const Rcpp::NumericVector& responder_cov, const Rcpp::IntegerVector& intercept_rows, const Rcpp::NumericMatrix& toff_var, const Rcpp::NumericVector& spill_cov, const Rcpp::NumericMatrix& beta_spill, const Rcpp::NumericMatrix& mu_mean, const Rcpp::NumericVector& alpha, bool nb1, int n_threads);
 RcppExport SEXP _PACE_pace_variance_decomposition_cpp(SEXP ct_meansSEXP, SEXP group_sizeSEXP, SEXP focal_groupSEXP, SEXP n_focalSEXP, SEXP uSEXP, SEXP se_uSEXP, SEXP slope_rowsSEXP, SEXP kernel_covSEXP, SEXP responder_rowsSEXP, SEXP responder_keepSEXP, SEXP responder_covSEXP, SEXP intercept_rowsSEXP, SEXP toff_varSEXP, SEXP spill_covSEXP, SEXP beta_spillSEXP, SEXP mu_meanSEXP, SEXP alphaSEXP, SEXP nb1SEXP, SEXP n_threadsSEXP) {
@@ -957,6 +972,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_PACE_pace_single_frame_statistics_cpp", (DL_FUNC) &_PACE_pace_single_frame_statistics_cpp, 5},
     {"_PACE_pace_dense_group_moments_cpp", (DL_FUNC) &_PACE_pace_dense_group_moments_cpp, 8},
     {"_PACE_pace_final_pass_statistics_cpp", (DL_FUNC) &_PACE_pace_final_pass_statistics_cpp, 9},
+    {"_PACE_pace_sparse_product_cpp", (DL_FUNC) &_PACE_pace_sparse_product_cpp, 5},
     {"_PACE_pace_variance_decomposition_cpp", (DL_FUNC) &_PACE_pace_variance_decomposition_cpp, 19},
     {"_PACE_pace_decomposition_aggregates_cpp", (DL_FUNC) &_PACE_pace_decomposition_aggregates_cpp, 7},
     {"_PACE_pace_four_block_shares_cpp", (DL_FUNC) &_PACE_pace_four_block_shares_cpp, 5},

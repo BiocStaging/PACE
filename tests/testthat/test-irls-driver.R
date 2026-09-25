@@ -126,10 +126,19 @@ test_that("the streamed ambient field agrees with the cached one", {
   # "stream" recomputes each chunk's ambient columns from W and Y rather than
   # slicing a cached n x G product, which is what makes the full Xenium 5K panel
   # fit in memory at 1.2M cells. The two are BIT-IDENTICAL: the chunking is
-  # exact because a sparse product is column-independent, and the accumulation
-  # matches CHOLMOD's once FMA contraction is disabled (fp_no_contract.hpp in
-  # sparse_product.cpp -- without it clang contracts the multiply-add and the
-  # answers drift by about 1e-6 in the coefficients).
+  # exact because a sparse product is column-independent, and both modes build
+  # the product with pace::sparse_product_csc, so there is only one accumulation
+  # to agree with.
+  #
+  # This assertion is exact on purpose, and it earns that by depending on one
+  # implementation rather than two. It failed on all five aarch64 build
+  # platforms while passing on both x86-64 ones for as long as cache mode took
+  # its product from R's `%*%` -- two libraries rounding a sparse product
+  # identically is a coincidence, and it held only on x86-64. The fit amplifies
+  # a last-bit difference in the ambient field by several orders (the interior
+  # solve runs in single precision, and the dispersion MLE's Brent stop is
+  # sqrt(eps)-limited), which is how 1 ulp became 1.5e-8 in the coefficients.
+  # See pace_sparse_product_cpp.
   #
   # This once differed by 2.13 in U, not 1e-6, because rho_accumulate derived
   # the anchor mask's column from the AMBIENT block's gene offset. That offset

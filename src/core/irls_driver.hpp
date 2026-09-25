@@ -53,16 +53,27 @@ namespace pace {
 // STREAMED recomputes each chunk's columns from W and Y instead. It costs a
 // sparse product per pass per iteration and saves the whole cache.
 //
-// The two modes are BIT-IDENTICAL, verified on a real cohort across chunk
-// sizes 16, 64 and 278 and at one and four threads. Two things make that true.
+// The two modes are BIT-IDENTICAL, re-verified on the BC example at chunk sizes
+// 16, 64 and 278 crossed with one and four threads -- all six exact in U, B and
+// percell_bleed_rho. Two things make that true.
 // The chunking is exact, because a sparse product is column-independent: a
-// chunk's columns do not depend on how the panel is cut. And the accumulation
-// matches CHOLMOD's because this file includes fp_no_contract.hpp -- without
-// it clang contracts `scratch[row] += a * b` into an FMA at its default
-// -ffp-contract=on, which is MORE accurate than a separate multiply and add
-// and therefore disagrees, by about 1e-15 an entry and about 1e-6 in the
-// coefficients once a fit has amplified it. That drift was mistaken for an
-// ordering difference before the include was added.
+// chunk's columns do not depend on how the panel is cut. And both modes build
+// the product with THIS code, so the accumulation is the same one twice.
+//
+// That second half used to read "matches CHOLMOD's, because this file includes
+// fp_no_contract.hpp". Keeping contraction off here is worth doing, but it was
+// never sufficient, because it says nothing about the OTHER implementation:
+// cache mode used to take its product from R's `%*%`. Two independent
+// implementations agreeing bit for bit is a coincidence, not an invariant, and
+// the coincidence held only on x86-64. On all five aarch64 build platforms the
+// modes differed by about 1.5e-8 in the coefficients. The likeliest reason is
+// that aarch64 has a fused multiply-add in its baseline ISA and x86-64 does
+// not, so Matrix could contract where this file cannot, but that was not
+// confirmed on a failing runner.
+//
+// Cache mode now calls sparse_product_csc too. The modes then differ only in
+// chunking, which is exact, so the claim above rests on this file instead of on
+// how a different package was built.
 struct AmbientSource {
   // Cached: a view of the whole n x G product, sliced per chunk.
   GeneBlock cached;

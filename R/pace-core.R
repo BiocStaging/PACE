@@ -425,7 +425,7 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
 ## is computed independently, so any split of the genes gives the same values.
 ## These expressions must stay in step with the solver's own final pass
 ## (pace::final_pass_statistics), which a test ties them to.
-.pace_mu_block <- function(object, inputs, gene_idx = NULL) {
+.pace_mu_block <- function(object, inputs, gene_idx = NULL, threads = 1L) {
   f  <- object@fit
   df <- object@context$df
   if (is.null(gene_idx)) gene_idx <- seq_len(ncol(f$B))
@@ -450,8 +450,16 @@ pace_ambient_field <- function(coords, Y, celltype, image, types, h_tech,
   if (is.null(inputs$amb))
     return(list(mu_bio = mu_bio, mu_spill = NULL))
 
-  ## Same expressions and floors as the solver's final pass.
-  ambient  <- as.matrix(inputs$amb$W %*% inputs$Y[, gene_idx, drop = FALSE])
+  ## Same expressions and floors as the solver's final pass -- and the same
+  ## PRODUCT. The final pass gets its ambient field from pace::sparse_product_csc
+  ## (see pace_sparse_product_cpp), so taking this one from R's `%*%` would put a
+  ## second implementation back on the one path a test ties to the first, at a
+  ## tolerance of 1e-10. Subsetting the genes first rather than passing a column
+  ## range keeps this correct for a non-contiguous `gene_idx`, which this
+  ## function's contract allows even though its only caller blocks contiguously.
+  ambient  <- as.matrix(pace_sparse_product_cpp(
+      .pace_as_dgc(inputs$amb$W), .pace_as_dgc(inputs$Y[, gene_idx, drop = FALSE]),
+      1L, length(gene_idx), .pace_thread_count(threads)))
   mu_spill <- pmax(ambient * f$percell_bleed_rho, 0)
   list(mu_bio = mu_bio, mu_spill = mu_spill)
 }
@@ -686,7 +694,7 @@ pace_fit_streaming <- function(Y, df, types = NULL,
 ## ----------------------------------------------------------------------------
 ## Reporting: mash shrinkage of the neighbour slopes.
 ## ----------------------------------------------------------------------------
-pace_shrink <- function(fit, types, resp_term = NULL, shrink_threads = 4L, ...) {
+pace_shrink <- function(fit, types, resp_term = NULL, shrink_threads = 1L, ...) {
   results_mv <- mvpql_to_results_multi(fit, keep_block = "celltype")
   apply_mashr_shrinkage(results = results_mv, focals = types,
                         neighbours = types, resp_term = resp_term,

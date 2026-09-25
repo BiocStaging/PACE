@@ -17,7 +17,7 @@ paceShrink(object, ...)
 cell types under the null and pass it to mash as \code{V}; \code{FALSE} treats them
 as independent), \code{data_driven}, and \code{shrink_threads}.
 
-\code{shrink_threads} (default 4) is how many R processes shrink the neighbour
+\code{shrink_threads} (default 1) is how many R processes shrink the neighbour
 slices at once. The slices are independent and carry about 90\% of the work,
 so this is where the time goes: on the full breast cancer cohort it takes
 the shrinkage from 55.4 to 21.1 seconds, and the called slopes agree with
@@ -29,10 +29,12 @@ starting vectors from the RNG, and a serial run consumes that stream slice
 by slice. Above 1 each slice is seeded with its own index, so the parallel
 result is reproducible run to run but differs from the serial one -- by
 ~1e-12 at cohort scale, but by up to ~1e-6 on small slices, where there is
-less data to swamp the difference. Set \code{shrink_threads = 1} when you need
-the serial stream exactly, which is what the package's own fixture tests
-do. With \code{data_driven = FALSE} nothing draws from the stream and the two
-are identical.}
+less data to swamp the difference. Serial is the default because it is the
+stream the package's fixtures were made with, and because the parallel path
+raised a BiocParallel reducer error on one supported R version that could
+not be reproduced on any other. Raise it when a large cohort's shrinkage is
+the bottleneck. With \code{data_driven = FALSE} nothing draws from the stream and
+the two are identical.}
 }
 \value{
 The \code{PACEFit} with the shrunken neighbour slopes added.

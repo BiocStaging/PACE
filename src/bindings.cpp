@@ -22,6 +22,7 @@
 #include "core/neighbourhood.hpp"
 #include "core/linear_predictor.hpp"
 #include "core/preprocess.hpp"
+#include "core/sparse_product.hpp"
 #include "core/statistics.hpp"
 
 namespace {
@@ -401,6 +402,68 @@ Rcpp::List pace_final_pass_statistics_cpp(const Rcpp::NumericMatrix& eta,
                             Rcpp::Named("total_row_sum") = total_row_sum,
                             Rcpp::Named("any_nonzero") = any_nonzero,
                             Rcpp::Named("mu") = mu, Rcpp::Named("toff") = toff);
+}
+
+// The ambient product A = W Y over a contiguous range of the right operand's
+// columns (see pace::sparse_product_csc). Operands and result are dgCMatrix;
+// `first_column` is 1-based, and the result's columns are numbered from one.
+//
+// R's `%*%` computes the same product, but it is a SECOND implementation, in a
+// translation unit this package does not control and cannot set flags on. Cache
+// mode used to take its product from there while streamed mode used this code,
+// so the two modes agreed only as long as two independent implementations
+// happened to round identically. They did not: the modes differed by about
+// 1.5e-8 in the coefficients on every aarch64 build platform while agreeing on
+// both x86-64 ones. The likeliest reason is fused multiply-add -- aarch64 has
+// one in its baseline ISA and x86-64 does not, and this package's -ffp-contract
+// setting cannot reach Matrix -- but that was never confirmed on a failing
+// runner, and a different accumulation inside Matrix would look the same.
+//
+// Which it is does not matter here. Routing BOTH modes through this function
+// leaves them differing only in chunking, and a column range is exactly the
+// same columns of the whole product because a sparse product is
+// column-independent. That is an invariant of this file rather than a
+// coincidence between two libraries.
+// [[Rcpp::export]]
+Rcpp::S4 pace_sparse_product_cpp(const Rcpp::S4& left, const Rcpp::S4& right, int first_column,
+                                 int n_columns, int n_threads) {
+  CscHolder left_holder(left);
+  CscHolder right_holder(right);
+  std::vector<int> column_pointer, row_index;
+  std::vector<double> values;
+  const pace::Status status = pace::sparse_product_csc(
+      left_holder.view, right_holder.view, static_cast<std::int64_t>(first_column) - 1, n_columns,
+      column_pointer, row_index, values, n_threads, user_interrupted);
+  raise_if_failed(status, "sparse product");
+  Rcpp::S4 out("dgCMatrix");
+  out.slot("Dim") =
+      Rcpp::IntegerVector::create(static_cast<int>(left_holder.view.n_rows), n_columns);
+  out.slot("p") = Rcpp::IntegerVector(column_pointer.begin(), column_pointer.end());
+  out.slot("i") = Rcpp::IntegerVector(row_index.begin(), row_index.end());
+  out.slot("x") = Rcpp::NumericVector(values.begin(), values.end());
+  // Carry dimnames the way `%*%` does -- the left operand's rows, and the
+  // SELECTED columns of the right operand. Dropping them made this an almost
+  // drop-in replacement, which is worse than either alternative: the readout
+  // rebuild returns its matrix to the caller, and its gene names went missing
+  // while every value stayed identical.
+  Rcpp::RObject left_names = Rcpp::S4(left).slot("Dimnames");
+  Rcpp::RObject right_names = Rcpp::S4(right).slot("Dimnames");
+  Rcpp::RObject out_rows = R_NilValue, out_cols = R_NilValue;
+  if (left_names.inherits("list") || TYPEOF(left_names) == VECSXP) {
+    const Rcpp::List names(left_names);
+    if (names.size() > 0) out_rows = names[0];
+  }
+  if (right_names.inherits("list") || TYPEOF(right_names) == VECSXP) {
+    const Rcpp::List names(right_names);
+    if (names.size() > 1 && !Rf_isNull(names[1])) {
+      const Rcpp::CharacterVector all(names[1]);
+      Rcpp::CharacterVector picked(n_columns);
+      for (int j = 0; j < n_columns; ++j) picked[j] = all[first_column - 1 + j];
+      out_cols = picked;
+    }
+  }
+  out.slot("Dimnames") = Rcpp::List::create(out_rows, out_cols);
+  return out;
 }
 
 // Per-(focal, gene) variance decomposition (see pace::variance_decomposition).

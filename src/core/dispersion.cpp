@@ -455,8 +455,14 @@ Status residual_variance_chunk(Span<const double> eta, const GeneBlock& counts,
     }
   }
 
-  auto body = [&](std::int64_t begin, std::int64_t end) {
-    static thread_local std::vector<double> y_column;
+  // Per-worker scratch owned by the caller. This was `static thread_local`,
+  // which destructs at every thread exit; see thread_pool.hpp on why that lost
+  // the Windows builds. Note dispersion_chunk in this same file already used
+  // plain locals for the same vectors, so the file disagreed with itself.
+  const int n_workers = worker_count(n_threads, n_genes, 1);
+  std::vector<std::vector<double>> y_scratch(static_cast<std::size_t>(n_workers));
+  auto body = [&](std::int64_t begin, std::int64_t end, int worker) {
+    std::vector<double>& y_column = y_scratch[static_cast<std::size_t>(worker)];
     for (std::int64_t j = begin; j < end; ++j) {
       expand_column(counts, j, n, y_column);
       const double* eta_column = eta.data + j * n;
@@ -487,8 +493,14 @@ Status marginal_variance(const GeneBlock& counts, double floor_value, std::int64
     return Status::failure(StatusCode::invalid_argument, "there must be at least one cell");
   }
 
-  auto body = [&](std::int64_t begin, std::int64_t end) {
-    static thread_local std::vector<double> y_column;
+  // Per-worker scratch owned by the caller. This was `static thread_local`,
+  // which destructs at every thread exit; see thread_pool.hpp on why that lost
+  // the Windows builds. Note dispersion_chunk in this same file already used
+  // plain locals for the same vectors, so the file disagreed with itself.
+  const int n_workers = worker_count(n_threads, n_genes, 1);
+  std::vector<std::vector<double>> y_scratch(static_cast<std::size_t>(n_workers));
+  auto body = [&](std::int64_t begin, std::int64_t end, int worker) {
+    std::vector<double>& y_column = y_scratch[static_cast<std::size_t>(worker)];
     for (std::int64_t j = begin; j < end; ++j) {
       expand_column(counts, j, n, y_column);
       long double sum = 0.0L;
