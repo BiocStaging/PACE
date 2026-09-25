@@ -50,6 +50,7 @@ Suggests:
     broom.mixed,
     glue,
     testthat (>= 3.0.0),
+    R6,
     knitr,
     rmarkdown,
     BiocStyle
