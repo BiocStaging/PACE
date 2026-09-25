@@ -121,9 +121,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
                                      ## cache -- 5.2 GB at 1.2M cells by 5,001 genes, which is the
                                      ## difference between fitting and paging there.
                                      ## The two are BIT-IDENTICAL: the chunking is exact because a
-                                     ## sparse product is column-independent, and the accumulation
-                                     ## matches CHOLMOD once FMA contraction is disabled in the
-                                     ## core. Verified across chunk sizes and thread counts.
+                                     ## sparse product is column-independent, and both modes build
+                                     ## the product with pace::sparse_product_csc, so there is only
+                                     ## one accumulation to agree with.
                                      ambient_mode      = c("cache", "stream"),
                                      verbose           = TRUE) {
   ambient_mode <- match.arg(ambient_mode)
@@ -479,9 +479,9 @@ fit_pace_mvpql_streaming <- function(Y, X_fixed, df, re_specs,
     ## build its own chunk. Taking a column range gives exactly what multiplying
     ## everything and slicing would -- a sparse product is column-independent --
     ## and this runs once at the end rather than per iteration. It goes through
-    ## the core's product rather than R's `%*%` for the reason given on
-    ## pace_sparse_product_cpp: the two round differently wherever the baseline
-    ## ISA has a fused multiply-add, and then cache and stream modes disagree.
+    ## the core's product rather than R's `%*%`, so that cache and stream modes
+    ## share one implementation instead of agreeing by coincidence. See
+    ## pace_sparse_product_cpp for what went wrong when they did not.
     if (stream_ambient) {
       ambient_chk <- pace_sparse_product_cpp(a_cache, Y, gene_idx_chk[1L],
                                              length(gene_idx_chk),

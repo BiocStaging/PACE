@@ -15,8 +15,10 @@ library(PACE)
 # running. The built-in progress reporters all report a file on FINISH, which is
 # exactly the wrong end for this.
 #
-# CheckReporter has to stay: it is what writes testthat.Rout.fail and fails the
-# check. The breadcrumbs go alongside it.
+# CheckReporter stays for its tally and failure summary. It is not what fails the
+# check -- test_check()'s stop_on_failure does that, and R CMD check renames
+# testthat.Rout to .fail itself on a non-zero exit. The breadcrumbs go alongside
+# it, not instead of it.
 BreadcrumbReporter <- R6::R6Class(
   "BreadcrumbReporter",
   inherit = testthat::Reporter,

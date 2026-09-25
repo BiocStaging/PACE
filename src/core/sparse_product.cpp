@@ -113,8 +113,9 @@ Status sparse_product_csc(const CscView& left, const CscView& right,
     running_total += column_count[static_cast<std::size_t>(j)];
     if (running_total > static_cast<std::int64_t>(std::numeric_limits<int>::max())) {
       return Status::failure(StatusCode::invalid_argument,
-                             "the chunk's ambient product exceeds what a sparse matrix can hold; "
-                             "reduce chunk_size");
+                             "the ambient product exceeds what a sparse matrix can hold; "
+                             "use ambient_mode = \"stream\", or a smaller chunk_size if "
+                             "already streaming");
     }
     column_pointer[static_cast<std::size_t>(j) + 1] = static_cast<int>(running_total);
   }

@@ -18,9 +18,16 @@ namespace pace {
 // list of the rows touched, which makes each column linear in its own non-zeros
 // instead of in n.
 //
-// Structural zeros are DROPPED, matching what Matrix's %*% hands back -- an
-// entry that cancels exactly is not stored, and the solver reads this one gene
-// at a time, so a stored zero would only cost it a wasted iteration.
+// Structural zeros are DROPPED. This does NOT match Matrix's %*%, which retains
+// an entry that is structurally present but numerically zero: given a right
+// operand carrying explicit zeros in its values, Matrix hands back the wider
+// pattern and this hands back the narrower one. The VALUES agree either way.
+//
+// Harmless for every consumer here, because each expands a column into a
+// zero-filled dense buffer and the emptiness tests are on values, not on the
+// pattern -- so an absent entry and a stored zero are indistinguishable. Worth
+// stating because it means this is not a drop-in for `%*%` in a test that
+// compares sparsity patterns.
 //
 // Two passes: the first counts each column's non-zeros so the column pointers
 // can be laid out before anything is written, the second fills. That keeps the

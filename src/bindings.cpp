@@ -432,8 +432,8 @@ Rcpp::S4 pace_sparse_product_cpp(const Rcpp::S4& left, const Rcpp::S4& right, in
   std::vector<int> column_pointer, row_index;
   std::vector<double> values;
   const pace::Status status = pace::sparse_product_csc(
-      left_holder.view, right_holder.view, first_column - 1, n_columns, column_pointer, row_index,
-      values, n_threads, user_interrupted);
+      left_holder.view, right_holder.view, static_cast<std::int64_t>(first_column) - 1, n_columns,
+      column_pointer, row_index, values, n_threads, user_interrupted);
   raise_if_failed(status, "sparse product");
   Rcpp::S4 out("dgCMatrix");
   out.slot("Dim") =
@@ -441,7 +441,28 @@ Rcpp::S4 pace_sparse_product_cpp(const Rcpp::S4& left, const Rcpp::S4& right, in
   out.slot("p") = Rcpp::IntegerVector(column_pointer.begin(), column_pointer.end());
   out.slot("i") = Rcpp::IntegerVector(row_index.begin(), row_index.end());
   out.slot("x") = Rcpp::NumericVector(values.begin(), values.end());
-  out.slot("Dimnames") = Rcpp::List::create(R_NilValue, R_NilValue);
+  // Carry dimnames the way `%*%` does -- the left operand's rows, and the
+  // SELECTED columns of the right operand. Dropping them made this an almost
+  // drop-in replacement, which is worse than either alternative: the readout
+  // rebuild returns its matrix to the caller, and its gene names went missing
+  // while every value stayed identical.
+  Rcpp::RObject left_names = Rcpp::S4(left).slot("Dimnames");
+  Rcpp::RObject right_names = Rcpp::S4(right).slot("Dimnames");
+  Rcpp::RObject out_rows = R_NilValue, out_cols = R_NilValue;
+  if (left_names.inherits("list") || TYPEOF(left_names) == VECSXP) {
+    const Rcpp::List names(left_names);
+    if (names.size() > 0) out_rows = names[0];
+  }
+  if (right_names.inherits("list") || TYPEOF(right_names) == VECSXP) {
+    const Rcpp::List names(right_names);
+    if (names.size() > 1 && !Rf_isNull(names[1])) {
+      const Rcpp::CharacterVector all(names[1]);
+      Rcpp::CharacterVector picked(n_columns);
+      for (int j = 0; j < n_columns; ++j) picked[j] = all[first_column - 1 + j];
+      out_cols = picked;
+    }
+  }
+  out.slot("Dimnames") = Rcpp::List::create(out_rows, out_cols);
   return out;
 }
 

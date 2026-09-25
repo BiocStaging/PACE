@@ -53,8 +53,9 @@ namespace pace {
 // STREAMED recomputes each chunk's columns from W and Y instead. It costs a
 // sparse product per pass per iteration and saves the whole cache.
 //
-// The two modes are BIT-IDENTICAL, verified on a real cohort across chunk
-// sizes 16, 64 and 278 and at one and four threads. Two things make that true.
+// The two modes are BIT-IDENTICAL, re-verified on the BC example at chunk sizes
+// 16, 64 and 278 crossed with one and four threads -- all six exact in U, B and
+// percell_bleed_rho. Two things make that true.
 // The chunking is exact, because a sparse product is column-independent: a
 // chunk's columns do not depend on how the panel is cut. And both modes build
 // the product with THIS code, so the accumulation is the same one twice.
