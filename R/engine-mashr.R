@@ -86,7 +86,7 @@ apply_mashr_shrinkage <- function(results, focals, neighbours,
                                    ## serial order, which is what the fixtures
                                    ## were made with; see .pace_shrink_slices()
                                    ## for what changes above 1.
-                                   shrink_threads = 4L) {
+                                   shrink_threads = 1L) {
   ## data_driven=FALSE -> canonical covariances only (skip the slow cov_pca/cov_ed
   ## extreme-deconvolution step). Much faster when there are many neighbour terms
   ## (e.g. 16-type fits); shrinkage is slightly less adaptive but driver rankings

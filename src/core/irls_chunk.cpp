@@ -127,14 +127,23 @@ Status working_response(Span<const double> eta, const GeneBlock& counts, const G
     }
   }
 
-  // The scratch is thread_local, not per call. With one gene per block (below)
+  // The scratch is per WORKER, not per call. With one gene per block (below)
   // `body` runs once per gene, and a fresh pair of n-length vectors per gene
-  // would be 19.6 MB of malloc and first-touch faults each at 1.2M cells. Held
-  // per worker instead, expand_column's assign() reuses the capacity and the
-  // allocation happens once per thread for the life of the pool.
-  auto body = [&](std::int64_t begin, std::int64_t end) {
-    static thread_local std::vector<double> y_column;
-    static thread_local std::vector<double> ambient_column;
+  // would be 19.6 MB of malloc and first-touch faults each at 1.2M cells. One
+  // slot per worker instead, so expand_column's assign() reuses the capacity and
+  // the allocation happens once per worker.
+  //
+  // It is owned HERE rather than in function-local `static thread_local` storage,
+  // which is what this was. Those destruct at every thread exit, this pool spawns
+  // and joins fresh threads on every call, and destroying thread_local non-POD
+  // objects inside a loaded library that often is a known way to lose the process
+  // silently on MinGW-w64 -- which is how the Windows builds died.
+  const int n_workers = worker_count(n_threads, n_genes, 1);
+  std::vector<std::vector<double>> y_scratch(static_cast<std::size_t>(n_workers));
+  std::vector<std::vector<double>> ambient_scratch(static_cast<std::size_t>(n_workers));
+  auto body = [&](std::int64_t begin, std::int64_t end, int worker) {
+    std::vector<double>& y_column = y_scratch[static_cast<std::size_t>(worker)];
+    std::vector<double>& ambient_column = ambient_scratch[static_cast<std::size_t>(worker)];
     for (std::int64_t j = begin; j < end; ++j) {
       expand_column(counts, j, n, y_column);
       if (gaussian) {

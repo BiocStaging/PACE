@@ -23,8 +23,29 @@ std::int64_t count_blocks(std::int64_t n_items, std::int64_t block_size) {
 
 }  // namespace
 
+int worker_count(int n_threads, std::int64_t n_items, std::int64_t block_size) {
+  if (n_items <= 0) return 1;
+  if (block_size < 1) block_size = 1;
+  const std::int64_t n_blocks = count_blocks(n_items, block_size);
+  if (n_threads <= 1 || n_blocks == 1) return 1;
+  std::int64_t cap = std::min<std::int64_t>(n_threads, n_blocks);
+  const unsigned hardware_threads = std::thread::hardware_concurrency();
+  if (hardware_threads > 0) cap = std::min<std::int64_t>(cap, hardware_threads);
+  return static_cast<int>(std::max<std::int64_t>(cap, 1));
+}
+
 Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size,
                     const std::function<void(std::int64_t, std::int64_t)>& body,
+                    const InterruptCheck& interrupted) {
+  // Forwards to the indexed form, ignoring the index.
+  return parallel_for(n_items, n_threads, block_size,
+                      std::function<void(std::int64_t, std::int64_t, int)>(
+                          [&body](std::int64_t begin, std::int64_t end, int) { body(begin, end); }),
+                      interrupted);
+}
+
+Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size,
+                    const std::function<void(std::int64_t, std::int64_t, int)>& body,
                     const InterruptCheck& interrupted) {
   if (n_items <= 0) return Status::success();
   if (block_size < 1) block_size = 1;
@@ -39,7 +60,7 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
       const std::int64_t begin = block * block_size;
       const std::int64_t end = std::min(n_items, begin + block_size);
       try {
-        body(begin, end);
+        body(begin, end, 0);
       } catch (const std::exception& error) {
         return Status::failure(StatusCode::internal_error, error.what());
       } catch (...) {
@@ -62,14 +83,14 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
   int finished_workers = 0;
   std::string error_message;
 
-  auto worker = [&]() {
+  auto worker = [&](int worker_index) {
     while (!stop.load()) {
       const std::int64_t block = next_block.fetch_add(1);
       if (block >= n_blocks) break;
       const std::int64_t begin = block * block_size;
       const std::int64_t end = std::min(n_items, begin + block_size);
       try {
-        body(begin, end);
+        body(begin, end, worker_index);
       } catch (const std::exception& error) {
         std::lock_guard<std::mutex> lock(state_mutex);
         if (error_message.empty()) error_message = error.what();
@@ -93,7 +114,7 @@ Status parallel_for(std::int64_t n_items, int n_threads, std::int64_t block_size
   std::vector<std::thread> threads;
   threads.reserve(n_workers);
   try {
-    for (int t = 0; t < n_workers; ++t) threads.emplace_back(worker);
+    for (int t = 0; t < n_workers; ++t) threads.emplace_back(worker, t);
   } catch (const std::exception& error) {
     // Could not start every worker: stop and join the ones that did start, so no
     // joinable std::thread is destroyed (which would call std::terminate).
