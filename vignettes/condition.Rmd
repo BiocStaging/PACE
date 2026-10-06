@@ -152,26 +152,29 @@ resp[order(resp$lfsr), c("gene", "focal", "neighbour", "estimate_shrunk", "lfsr"
 ```
 
 `plotDrivers()` gives a pair as a figure: the genes ranked by driver score on
-the left, their per-gene decomposition on the right. Taking tumour cells next to
-T cells, the top drivers include *B2M* and *HLA-B*, both MHC class I. The right
-panel is worth reading before interpreting them: spillover is their largest
-block, and both are highly expressed by T cells themselves, so contamination
-from the neighbour and a genuine response in the tumour cell predict the same
-direction. This is the case the decomposition exists to make visible, and it is
-why a driver rank alone is a starting point rather than a result.
+the left, their per-gene decomposition on the right. On a fit with a condition
+the score is built from the `resp_term` interaction, so this ranks genes by how
+much the proximity effect **differs between arms**, not by the effect they share.
+Taking tumour cells next to T cells, the ranking is MHC class I and interferon:
+*B2M*, *HLA-B*, *HLA-C*, *HLA-E*, *STAT1*, *MX1*, *IFITM1* and *IFITM3*.
 
 ```{r drivers, fig.width = 10, fig.height = 4.5}
 plotDrivers(fit, "Tumour", "T_Cell")
 ```
 
-Two things to keep in mind when reading this on a condition fit. The ranking
-scores the *shared* spatial effect rather than the responder difference, so it
-answers which genes carry the relationship, not which genes differ between arms;
-`neighbourSlopes()` above is what answers the latter. And the table behind it is
-already filtered at `lfsr < 0.05`, so a sparse figure means few genes cleared
-that threshold rather than few genes being involved. On this reduced panel
-`Macrophage <- Tumour` has only one such gene, which is why the pair shown here
-is a different one.
+Two things follow from the score being the interaction. A difference between arms
+subtracts anything common to both, and contamination from the neighbour is
+largely common to both, so this ranking is less exposed to it than a ranking of
+the shared effect would be. That matters here, because *B2M* and *HLA-B* are
+expressed by T cells themselves and the right panel shows spillover as their
+largest block; it is the differencing, not the size of that block, that makes the
+ranking readable. To rank the *shared* effect instead, fit without the condition
+term, which puts the shrinkage on the baseline slopes.
+
+The table is also filtered at `lfsr < 0.05`, so a sparse figure means few genes
+cleared that threshold rather than few genes being involved. On this reduced
+panel `Macrophage <- Tumour` has only one, which is why the pair shown here is a
+different one.
 
 Among the strongest is *SPP1* in macrophages next to tumour cells:
 
