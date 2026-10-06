@@ -202,8 +202,8 @@ for the responder-by-proximity block rather than the baseline spatial one.
 
 # Macrophage–tumour drivers
 
-`plotDrivers()` ranks the genes mediating a relationship by a driver score (MCSD,
-combining the shrunken slope, its cell-type specificity, and its expression
+`plotDrivers()` ranks the genes mediating a relationship by a driver score
+(combining the shrunken slope, its cell-type specificity, and its expression
 level), alongside their per-gene single-frame decomposition. For the
 macrophage-tumour pair, the top drivers are the tissue-resident marker **MRC1**
 (CD206), reduced near tumour, and the lipid-associated marker **APOC1**, elevated

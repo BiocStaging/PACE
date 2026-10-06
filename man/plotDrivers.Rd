@@ -26,8 +26,9 @@ A \code{patchwork} / \code{ggplot} object.
 }
 \description{
 Reproduces the manuscript per-pair driver figure: the top genes ranked by
-driver score (MCSD) for a focal-neighbour pair, alongside their per-gene
-single-frame variance decomposition.
+their driver score for a focal-neighbour pair, alongside their per-gene
+single-frame variance decomposition. The score is carried in the \code{MCSD}
+column of \code{topDrivers(object)} for backwards compatibility.
 }
 \examples{
 fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))

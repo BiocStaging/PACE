@@ -247,7 +247,7 @@ make_pair_composite <- function(focus_focal, focus_neighbour, mv, sf = NULL, n_t
     ggplot2::geom_col(fill = "#F5A623", width = 0.7) +
     ggplot2::geom_text(ggplot2::aes(label = sprintf("%.3f", MCSD)), hjust = -0.15, size = 3) +
     ggplot2::scale_x_continuous(expand = ggplot2::expansion(mult = c(0, 0.2))) +
-    ggplot2::labs(x = "MCSD (spatial cell state)", y = NULL,
+    ggplot2::labs(x = "Driver score (spatial cell state)", y = NULL,
                   title = sprintf("%s <- %s", focus_focal, focus_neighbour)) +
     ggplot2::theme_classic(base_size = 11)
   if (panels == "mcsd") return(p_mcsd)
@@ -443,8 +443,9 @@ plotPairHeatmap <- function(object, block = c("spatial", "responder"), title = N
 #' Per-pair driver composite
 #'
 #' Reproduces the manuscript per-pair driver figure: the top genes ranked by
-#' driver score (MCSD) for a focal-neighbour pair, alongside their per-gene
-#' single-frame variance decomposition.
+#' their driver score for a focal-neighbour pair, alongside their per-gene
+#' single-frame variance decomposition. The score is carried in the `MCSD`
+#' column of `topDrivers(object)` for backwards compatibility.
 #'
 #' @param object A [PACEFit].
 #' @param focal,neighbour The focal and neighbour cell types.
