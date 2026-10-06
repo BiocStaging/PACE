@@ -155,8 +155,11 @@ resp[order(resp$lfsr), c("gene", "focal", "neighbour", "estimate_shrunk", "lfsr"
 the left, their per-gene decomposition on the right. On a fit with a condition
 the score is built from the `resp_term` interaction, so this ranks genes by how
 much the proximity effect **differs between arms**, not by the effect they share.
-Taking tumour cells next to T cells, the ranking is MHC class I and interferon:
-*B2M*, *HLA-B*, *HLA-C*, *HLA-E*, *STAT1*, *MX1*, *IFITM1* and *IFITM3*.
+Taking tumour cells next to T cells, *CRYAB*, *MZT2A* and *S100B* lead, and nine
+of the thirteen genes called are MHC class I or interferon: *B2M*, *HLA-B*,
+*HLA-C*, *HLA-E*, *STAT1*, *MX1*, *IFITM1*, *IFITM3* and *IFI27*. Those nine all
+have positive interactions, so their response to T cell proximity is steeper in
+the progressive arm.
 
 ```{r drivers, fig.width = 10, fig.height = 4.5}
 plotDrivers(fit, "Tumour", "T_Cell")
@@ -168,8 +171,18 @@ largely common to both, so this ranking is less exposed to it than a ranking of
 the shared effect would be. That matters here, because *B2M* and *HLA-B* are
 expressed by T cells themselves and the right panel shows spillover as their
 largest block; it is the differencing, not the size of that block, that makes the
-ranking readable. To rank the *shared* effect instead, fit without the condition
-term, which puts the shrinkage on the baseline slopes.
+ranking readable. To rank the *shared* effect instead, re-run `paceShrink()` with
+the responder term switched off, which puts the shrinkage on the baseline slopes.
+No new model fit is needed.
+
+`topDrivers()` returns the same ranking as a table, with the score and the parts
+it is built from:
+
+```{r drivers-table}
+topDrivers(fit)[["Tumour_T_Cell"]]$scores |>
+  select(rank, gene, MCSD, b_clean, spec, focal_mean, lfsr) |>
+  head(8)
+```
 
 The table is also filtered at `lfsr < 0.05`, so a sparse figure means few genes
 cleared that threshold rather than few genes being involved. On this reduced
