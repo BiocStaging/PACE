@@ -31,6 +31,15 @@ sign, and \code{false_sign_rate} is that count as a fraction of the calls
 (Stephens 2017). Read a pair's call count against it: many ordered pairs are
 tested, and a pair with three calls and an expected 1.5 wrong is weak
 evidence. Both are only as well calibrated as the lfsr itself.
+
+On a fit with a condition, the table carries two different slopes and they
+are not a raw-and-shrunken pair of the same quantity. \code{b_clean} and \code{lfsr}
+are the condition-interaction term, the one the shrinkage was applied to, and
+the driver score \code{MCSD} is built from \code{b_clean}. \code{u_raw} is the \emph{baseline}
+slope, the unshrunken BLUP for the neighbour on its own, and it is there
+because the variance split needs it: \code{V_S} comes from \code{u_raw} and \code{V_RxS}
+from \code{b_clean}. On a fit without a condition there is no interaction to
+separate, so \code{u_raw} is absent and \code{b_clean} is the only slope.
 }
 \examples{
 fit <- readRDS(system.file("extdata", "pace_fit_example.rds", package = "PACE"))
